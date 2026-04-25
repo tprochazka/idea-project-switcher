@@ -6,40 +6,48 @@ import com.intellij.ide.impl.ProjectUtil
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
+import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.ui.ComboBox
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
-import com.intellij.ui.ColoredListCellRenderer
-import com.intellij.ui.ColoredTreeCellRenderer
 import com.intellij.ui.JBColor
 import com.intellij.ui.SearchTextField
-import com.intellij.ui.SimpleTextAttributes
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.hover.ListHoverListener
-import com.intellij.ui.hover.TreeHoverListener
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
+import java.awt.Font
 import java.awt.FlowLayout
+import java.awt.Graphics
+import java.awt.Graphics2D
 import java.awt.Point
+import java.awt.RenderingHints
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
+import java.awt.event.MouseMotionAdapter
+import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.Locale
+import javax.swing.BoxLayout
 import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
 import javax.swing.JButton
 import javax.swing.JComponent
+import javax.swing.JLabel
 import javax.swing.JList
 import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.JTree
+import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
 import javax.swing.event.DocumentEvent
@@ -48,9 +56,10 @@ import javax.swing.event.TreeExpansionEvent
 import javax.swing.event.TreeExpansionListener
 import javax.swing.tree.DefaultMutableTreeNode
 import javax.swing.tree.DefaultTreeModel
+import javax.swing.tree.TreeCellRenderer
 import javax.swing.tree.TreePath
 
-class MyToolWindowFactory : ToolWindowFactory {
+class MyToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun shouldBeAvailable(project: Project) = true
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
@@ -70,7 +79,6 @@ private class ProjectSwitcherPanel(
     private val viewCombo = ComboBox(ViewMode.entries.toTypedArray())
     private val statusLabel = JBLabel()
     private val contentPanel = JPanel(BorderLayout())
-    private val currentProjectPath = project.basePath?.let { Paths.get(it).toAbsolutePath().normalize() }
     private var entries: List<ProjectEntry> = emptyList()
     private var renderedScrollPane: JBScrollPane? = null
     private var renderedTree: Tree? = null
@@ -226,7 +234,7 @@ private class ProjectSwitcherPanel(
         list.selectionMode = ListSelectionModel.SINGLE_SELECTION
         list.emptyText.text = "No projects found"
         ListHoverListener.DEFAULT.addTo(list)
-        list.cellRenderer = ProjectListRenderer(projectIconProvider, currentProjectPath)
+        list.cellRenderer = ProjectListRenderer(projectIconProvider) { activeProjectPathIds() }
         list.addMouseListener(ProjectMouseListener { event ->
             val index = list.locationToIndex(event.point)
             if (index >= 0) model.getElementAt(index) else null
@@ -272,11 +280,11 @@ private class ProjectSwitcherPanel(
         }
         sortTreeChildren(root, projectComparator())
 
-        val tree = Tree(DefaultTreeModel(root))
+        val tree = ProjectTree(DefaultTreeModel(root)) { activeProjectPathIds() }
         tree.isRootVisible = false
         tree.showsRootHandles = true
-        TreeHoverListener.DEFAULT.addTo(tree)
-        tree.cellRenderer = ProjectTreeRenderer(projectIconProvider, currentProjectPath)
+        tree.rowHeight = 0
+        tree.cellRenderer = ProjectTreeRenderer(projectIconProvider) { activeProjectPathIds() }
         tree.addMouseListener(ProjectMouseListener { event ->
             val path = tree.getPathForLocation(event.x, event.y) ?: return@ProjectMouseListener null
             (path.lastPathComponent as? DefaultMutableTreeNode)?.userObject as? ProjectEntry
@@ -462,6 +470,10 @@ private class ProjectSwitcherPanel(
         return (node.userObject as? DirectoryNode)?.id
     }
 
+    private fun activeProjectPathIds(): Set<String> {
+        return activeProjectPathIds(project)
+    }
+
     private fun openProject(entry: ProjectEntry, newWindow: Boolean) {
         saveVisibleState()
         ProjectUtil.openOrImport(entry.path, project, newWindow)
@@ -495,46 +507,173 @@ private class ProjectSwitcherPanel(
 
 private data class DirectoryNode(val name: String, val id: String)
 
+private fun activeProjectPathIds(project: Project): Set<String> {
+    val paths = linkedSetOf<Path>()
+    project.basePath?.let { addProjectPathVariants(Paths.get(it), paths) }
+    project.projectFilePath?.let { addProjectPathVariants(Paths.get(it), paths) }
+
+    return paths
+        .flatMapTo(linkedSetOf()) { normalizedPathIds(it) }
+}
+
+private fun addProjectPathVariants(path: Path, paths: MutableSet<Path>) {
+    val normalized = path.toAbsolutePath().normalize()
+    paths.add(normalized)
+
+    val fileName = normalized.fileName?.toString() ?: return
+    if (fileName.equals(".idea", ignoreCase = true) || fileName.endsWith(".ipr", ignoreCase = true)) {
+        normalized.parent?.let(paths::add)
+    }
+}
+
+private fun isActiveProjectPath(projectPath: Path, activeProjectPathIds: Set<String>): Boolean {
+    if (activeProjectPathIds.isEmpty()) return false
+    return normalizedPathIds(projectPath).any { it in activeProjectPathIds }
+}
+
+private fun normalizedPathIds(path: Path): Set<String> {
+    val ids = linkedSetOf(path.toAbsolutePath().normalize().pathId())
+    if (Files.exists(path)) {
+        runCatching { path.toRealPath().normalize().pathId() }
+            .getOrNull()
+            ?.let(ids::add)
+    }
+    return ids
+}
+
+private fun Path.pathId(): String {
+    return toString()
+        .trimEnd('\\', '/')
+        .lowercase(Locale.ROOT)
+}
+
+private class ProjectTree(
+    model: DefaultTreeModel,
+    private val activeProjectPathIdsProvider: () -> Set<String>,
+) : Tree(model) {
+    var hoveredRow: Int = -1
+        private set
+
+    init {
+        isOpaque = false
+        addMouseMotionListener(object : MouseMotionAdapter() {
+            override fun mouseMoved(event: MouseEvent) {
+                updateHoveredRow(getRowForLocation(event.x, event.y))
+            }
+        })
+        addMouseListener(object : MouseAdapter() {
+            override fun mouseExited(event: MouseEvent) {
+                updateHoveredRow(-1)
+            }
+        })
+    }
+
+    override fun paintComponent(graphics: Graphics) {
+        paintRowMarkers(graphics)
+        super.paintComponent(graphics)
+    }
+
+    private fun updateHoveredRow(row: Int) {
+        if (hoveredRow == row) return
+        val previous = hoveredRow
+        hoveredRow = row
+        repaintRow(previous)
+        repaintRow(row)
+    }
+
+    private fun repaintRow(row: Int) {
+        if (row < 0) return
+        val bounds = getRowBounds(row) ?: return
+        repaint(0, bounds.y, width, bounds.height)
+    }
+
+    private fun paintRowMarkers(graphics: Graphics) {
+        val activeProjectPathIds = activeProjectPathIdsProvider()
+
+        val graphics2D = graphics.create() as Graphics2D
+        try {
+            graphics2D.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
+            if (activeProjectPathIds.isNotEmpty()) {
+                graphics2D.color = ACTIVE_PROJECT_BACKGROUND
+                for (row in 0 until rowCount) {
+                    val treePath = getPathForRow(row) ?: continue
+                    val node = treePath.lastPathComponent as? DefaultMutableTreeNode ?: continue
+                    val entry = node.userObject as? ProjectEntry ?: continue
+                    if (!isActiveProjectPath(entry.path, activeProjectPathIds)) continue
+
+                    paintRowMarker(graphics2D, row)
+                }
+            }
+
+            if (hoveredRow >= 0) {
+                graphics2D.color = HOVER_PROJECT_BACKGROUND
+                paintRowMarker(graphics2D, hoveredRow)
+            }
+        } finally {
+            graphics2D.dispose()
+        }
+    }
+
+    private fun paintRowMarker(graphics2D: Graphics2D, row: Int) {
+        val bounds = getRowBounds(row) ?: return
+        val x = TREE_ROW_MARKER_HORIZONTAL_INSET
+        val y = bounds.y + TREE_ROW_MARKER_VERTICAL_INSET
+        val markerWidth = (width - x * 2).coerceAtLeast(0)
+        val markerHeight = (bounds.height - TREE_ROW_MARKER_VERTICAL_INSET * 2).coerceAtLeast(0)
+        graphics2D.fillRoundRect(
+            x,
+            y,
+            markerWidth,
+            markerHeight,
+            TREE_ROW_MARKER_ARC,
+            TREE_ROW_MARKER_ARC,
+        )
+    }
+}
+
 private class ProjectListRenderer(
     private val projectIconProvider: ProjectIconProvider,
-    private val currentProjectPath: Path?,
-) : ColoredListCellRenderer<ProjectEntry>() {
-    override fun customizeCellRenderer(
+    private val activeProjectPathIdsProvider: () -> Set<String>,
+) : ListCellRenderer<ProjectEntry> {
+    private val cell = ProjectCellPanel(
+        JBUI.Borders.empty(6, 6),
+    )
+
+    override fun getListCellRendererComponent(
         list: JList<out ProjectEntry>,
         value: ProjectEntry?,
         index: Int,
         selected: Boolean,
         hasFocus: Boolean,
-    ) {
-        if (value == null) return
-        val isActiveProject = value.path == currentProjectPath
+    ): Component {
+        if (value == null) return cell.configureEmpty(list.background)
+        val isActiveProject = isActiveProjectPath(value.path, activeProjectPathIdsProvider())
         val isHovered = index == ListHoverListener.getHoveredIndex(list)
-        icon = projectIconProvider.getIcon(value)
-        iconTextGap = PROJECT_ICON_TEXT_GAP
-        append(value.name, if (isActiveProject) ACTIVE_PROJECT_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
-        appendBranch(value.branch)
-        toolTipText = value.path.toString()
-        ipad = JBUI.insets(4, 6)
-        when {
-            selected -> isOpaque = true
-            isHovered -> {
-                background = HOVER_PROJECT_BACKGROUND
-                isOpaque = true
-            }
-            isActiveProject -> {
-                background = ACTIVE_PROJECT_BACKGROUND
-                isOpaque = true
-            }
-            else -> isOpaque = false
-        }
+        val foreground = if (selected) UIUtil.getListSelectionForeground(hasFocus) else list.foreground
+        return cell.configure(
+            projectIcon = projectIconProvider.getIcon(value),
+            projectName = value.name,
+            branch = value.branch,
+            active = isActiveProject,
+            backgroundColor = listCellBackground(list, selected, hasFocus, isHovered, isActiveProject),
+            foregroundColor = foreground,
+            branchForegroundColor = if (selected) foreground else BRANCH_FOREGROUND,
+            baseFont = list.font,
+            tooltip = value.path.toString(),
+        )
     }
 }
 
 private class ProjectTreeRenderer(
     private val projectIconProvider: ProjectIconProvider,
-    private val currentProjectPath: Path?,
-) : ColoredTreeCellRenderer() {
-    override fun customizeCellRenderer(
+    private val activeProjectPathIdsProvider: () -> Set<String>,
+) : TreeCellRenderer {
+    private val projectCell = ProjectCellPanel(
+        JBUI.Borders.empty(4, 2, 5, 4),
+    )
+    private val directoryCell = DirectoryCellPanel()
+
+    override fun getTreeCellRendererComponent(
         tree: JTree,
         value: Any,
         selected: Boolean,
@@ -542,52 +681,174 @@ private class ProjectTreeRenderer(
         leaf: Boolean,
         row: Int,
         hasFocus: Boolean,
-    ) {
+    ): Component {
         val node = value as? DefaultMutableTreeNode
-        val isHovered = row == TreeHoverListener.getHoveredRow(tree)
-        when (val userObject = node?.userObject) {
+        val isHovered = row == (tree as? ProjectTree)?.hoveredRow
+        return when (val userObject = node?.userObject) {
             is ProjectEntry -> {
-                val isActiveProject = userObject.path == currentProjectPath
-                icon = projectIconProvider.getIcon(userObject)
-                iconTextGap = PROJECT_ICON_TEXT_GAP
-                append(userObject.name, if (isActiveProject) ACTIVE_PROJECT_ATTRIBUTES else SimpleTextAttributes.REGULAR_ATTRIBUTES)
-                appendBranch(userObject.branch)
-                toolTipText = userObject.path.toString()
-                when {
-                    selected -> isOpaque = true
-                    isHovered -> {
-                        background = HOVER_PROJECT_BACKGROUND
-                        isOpaque = true
-                    }
-                    isActiveProject -> {
-                        background = ACTIVE_PROJECT_BACKGROUND
-                        isOpaque = true
-                    }
-                    else -> isOpaque = false
-                }
+                val isActiveProject = isActiveProjectPath(userObject.path, activeProjectPathIdsProvider())
+                val foreground = UIUtil.getTreeForeground(selected, hasFocus)
+                projectCell.configure(
+                    projectIcon = projectIconProvider.getIcon(userObject),
+                    projectName = userObject.name,
+                    branch = userObject.branch,
+                    active = isActiveProject,
+                    backgroundColor = treeCellBackground(tree, selected, hasFocus, isHovered, isActiveProject),
+                    foregroundColor = foreground,
+                    branchForegroundColor = if (selected) foreground else BRANCH_FOREGROUND,
+                    baseFont = tree.font,
+                    tooltip = userObject.path.toString(),
+                )
             }
             is DirectoryNode -> {
-                icon = AllIcons.Nodes.Folder
-                iconTextGap = PROJECT_ICON_TEXT_GAP
-                append(userObject.name, SimpleTextAttributes.REGULAR_ATTRIBUTES)
-                when {
-                    selected -> isOpaque = true
-                    isHovered -> {
-                        background = HOVER_PROJECT_BACKGROUND
-                        isOpaque = true
-                    }
-                    else -> isOpaque = false
-                }
+                directoryCell.configure(
+                    icon = AllIcons.Nodes.Folder,
+                    name = userObject.name,
+                    backgroundColor = treeCellBackground(tree, selected, hasFocus, isHovered, active = false),
+                    foregroundColor = UIUtil.getTreeForeground(selected, hasFocus),
+                    baseFont = tree.font,
+                )
             }
-            else -> isOpaque = selected
+            else -> directoryCell.configure(
+                icon = null,
+                name = value.toString(),
+                backgroundColor = tree.background,
+                foregroundColor = tree.foreground,
+                baseFont = tree.font,
+            )
         }
     }
 }
 
-private fun Component.appendBranch(branch: String?) {
-    if (this !is com.intellij.ui.SimpleColoredComponent || branch.isNullOrBlank()) return
-    append("  ")
-    append(branch, BRANCH_ATTRIBUTES)
+private class ProjectCellPanel(
+    cellBorder: javax.swing.border.Border,
+) : JPanel(BorderLayout()) {
+    private val projectIconLabel = JBLabel()
+    private val textPanel = JPanel()
+    private val projectNameLabel = JBLabel()
+    private val branchLabel = JBLabel()
+
+    init {
+        isOpaque = true
+        border = cellBorder
+        projectIconLabel.verticalAlignment = JLabel.TOP
+        projectIconLabel.border = JBUI.Borders.empty(1, 0, 0, PROJECT_ICON_TEXT_GAP)
+
+        textPanel.layout = BoxLayout(textPanel, BoxLayout.Y_AXIS)
+        textPanel.isOpaque = false
+        projectNameLabel.isOpaque = false
+        branchLabel.isOpaque = false
+        projectNameLabel.alignmentX = Component.LEFT_ALIGNMENT
+        branchLabel.alignmentX = Component.LEFT_ALIGNMENT
+        branchLabel.icon = AllIcons.Vcs.Branch
+        branchLabel.iconTextGap = BRANCH_ICON_TEXT_GAP
+
+        textPanel.add(projectNameLabel)
+        textPanel.add(branchLabel)
+        add(projectIconLabel, BorderLayout.WEST)
+        add(textPanel, BorderLayout.CENTER)
+    }
+
+    fun configure(
+        projectIcon: javax.swing.Icon,
+        projectName: String,
+        branch: String?,
+        active: Boolean,
+        backgroundColor: Color,
+        foregroundColor: Color,
+        branchForegroundColor: Color,
+        baseFont: Font,
+        tooltip: String,
+    ): Component {
+        background = backgroundColor
+        toolTipText = tooltip
+        projectIconLabel.icon = projectIcon
+        projectIconLabel.toolTipText = tooltip
+        projectNameLabel.text = projectName
+        projectNameLabel.font = baseFont.deriveFont(if (active) Font.BOLD else Font.PLAIN)
+        projectNameLabel.foreground = foregroundColor
+        projectNameLabel.toolTipText = tooltip
+        branchLabel.text = branch.orEmpty()
+        branchLabel.isVisible = !branch.isNullOrBlank()
+        branchLabel.font = baseFont
+        branchLabel.foreground = branchForegroundColor
+        branchLabel.toolTipText = branch
+        return this
+    }
+
+    fun configureEmpty(backgroundColor: Color): Component {
+        background = backgroundColor
+        toolTipText = null
+        projectIconLabel.icon = null
+        projectNameLabel.text = ""
+        branchLabel.text = ""
+        branchLabel.isVisible = false
+        return this
+    }
+}
+
+private class DirectoryCellPanel : JBLabel(), TreeCellRenderer {
+    init {
+        isOpaque = true
+        iconTextGap = PROJECT_ICON_TEXT_GAP
+        border = JBUI.Borders.empty(2, 2, 2, 4)
+    }
+
+    fun configure(
+        icon: javax.swing.Icon?,
+        name: String,
+        backgroundColor: Color,
+        foregroundColor: Color,
+        baseFont: Font,
+    ): Component {
+        this.icon = icon
+        text = name
+        background = backgroundColor
+        foreground = foregroundColor
+        font = baseFont
+        toolTipText = null
+        return this
+    }
+
+    override fun getTreeCellRendererComponent(
+        tree: JTree,
+        value: Any,
+        selected: Boolean,
+        expanded: Boolean,
+        leaf: Boolean,
+        row: Int,
+        hasFocus: Boolean,
+    ): Component = this
+}
+
+private fun listCellBackground(
+    list: JList<*>,
+    selected: Boolean,
+    hasFocus: Boolean,
+    hovered: Boolean,
+    active: Boolean,
+): Color {
+    return when {
+        selected -> UIUtil.getListSelectionBackground(hasFocus)
+        hovered -> HOVER_PROJECT_BACKGROUND
+        active -> ACTIVE_PROJECT_BACKGROUND
+        else -> list.background
+    }
+}
+
+private fun treeCellBackground(
+    tree: JTree,
+    selected: Boolean,
+    hasFocus: Boolean,
+    hovered: Boolean,
+    active: Boolean,
+): Color {
+    return when {
+        selected -> UIUtil.getTreeSelectionBackground(hasFocus)
+        hovered -> HOVER_PROJECT_BACKGROUND
+        active -> ACTIVE_PROJECT_BACKGROUND
+        else -> tree.background
+    }
 }
 
 private fun enumRenderer(): DefaultListCellRenderer {
@@ -612,21 +873,24 @@ private fun enumRenderer(): DefaultListCellRenderer {
     }
 }
 
-private val BRANCH_ATTRIBUTES = SimpleTextAttributes(
-    SimpleTextAttributes.STYLE_BOLD,
-    JBUI.CurrentTheme.Link.Foreground.ENABLED,
-)
+private val BRANCH_FOREGROUND = JBUI.CurrentTheme.Link.Foreground.ENABLED
 
 private val PROJECT_ICON_TEXT_GAP = JBUI.scale(8)
 
-private val ACTIVE_PROJECT_ATTRIBUTES = SimpleTextAttributes(SimpleTextAttributes.STYLE_BOLD, null as Color?)
+private val BRANCH_ICON_TEXT_GAP = JBUI.scale(4)
+
+private val TREE_ROW_MARKER_HORIZONTAL_INSET = JBUI.scale(12)
+
+private val TREE_ROW_MARKER_VERTICAL_INSET = JBUI.scale(1)
+
+private val TREE_ROW_MARKER_ARC = JBUI.scale(6)
 
 private val ACTIVE_PROJECT_BACKGROUND = JBColor(
-    Color(0xEAF3FF),
-    Color(0x24344A),
+    Color(0xE7EAEE),
+    Color(0x45494D),
 )
 
 private val HOVER_PROJECT_BACKGROUND = JBColor(
     Color(0xDCEBFF),
-    Color(0x2F4A73),
+    Color(0x243F63),
 )
