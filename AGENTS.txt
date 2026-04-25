@@ -72,6 +72,7 @@ The target user has multiple working copies of the same project on different bra
 - Tool window id is `Projects`, intentionally similar to the built-in Project panel.
 - Tool window icon is currently `AllIcons.Nodes.Project`.
 - The settings configurable display name is `Project Switcher`.
+- Keep top-level controls in native tool-window chrome where practical. Refresh is a title action; sort/view/settings live directly in the tool-window overflow/gear actions, not in a plugin submenu. The content toolbar should stay focused on search.
 - Right click on a project should offer `Open in New Window`.
 - Left click should open the project in the active/current window.
 - The toolbar-widget feature has only been researched and documented. Do not implement it unless explicitly asked.

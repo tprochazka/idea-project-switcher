@@ -3,12 +3,18 @@ package cz.atomsoft.projectswitcher.projectswitcherplugin
 import com.intellij.icons.AllIcons
 import com.intellij.ide.RecentProjectsManagerBase
 import com.intellij.ide.impl.ProjectUtil
-import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.Disposable
+import com.intellij.openapi.actionSystem.ActionGroup
+import com.intellij.openapi.actionSystem.ActionUpdateThread
+import com.intellij.openapi.actionSystem.AnAction
+import com.intellij.openapi.actionSystem.AnActionEvent
+import com.intellij.openapi.actionSystem.DefaultActionGroup
+import com.intellij.openapi.actionSystem.ToggleAction
+import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.options.ShowSettingsUtil
-import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.DumbAware
-import com.intellij.openapi.ui.ComboBox
+import com.intellij.openapi.project.DumbAwareAction
+import com.intellij.openapi.project.Project
 import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.JBColor
@@ -25,7 +31,6 @@ import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.Font
-import java.awt.FlowLayout
 import java.awt.Graphics
 import java.awt.Graphics2D
 import java.awt.Point
@@ -38,9 +43,7 @@ import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Locale
 import javax.swing.BoxLayout
-import javax.swing.DefaultListCellRenderer
 import javax.swing.DefaultListModel
-import javax.swing.JButton
 import javax.swing.JComponent
 import javax.swing.JLabel
 import javax.swing.JList
@@ -65,6 +68,8 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = ProjectSwitcherPanel(project)
+        toolWindow.setTitleActions(listOf(panel.createRefreshAction()))
+        toolWindow.setAdditionalGearActions(panel.createOptionsActionGroup())
         val content = ContentFactory.getInstance().createContent(panel, "", false)
         content.setDisposer(panel)
         toolWindow.contentManager.addContent(content)
@@ -77,8 +82,6 @@ private class ProjectSwitcherPanel(
     private val settings = ProjectSwitcherSettings.getInstance()
     private val projectIconProvider = ProjectIconProvider()
     private val searchField = SearchTextField(false)
-    private val sortCombo = ComboBox(SortMode.entries.toTypedArray())
-    private val viewCombo = ComboBox(ViewMode.entries.toTypedArray())
     private val statusLabel = JBLabel()
     private val contentPanel = JPanel(BorderLayout())
     private var entries: List<ProjectEntry> = emptyList()
@@ -90,12 +93,9 @@ private class ProjectSwitcherPanel(
 
     init {
         border = JBUI.Borders.empty(4)
-        add(createToolbar(), BorderLayout.NORTH)
+        add(createSearchBar(), BorderLayout.NORTH)
         add(contentPanel, BorderLayout.CENTER)
         add(statusLabel, BorderLayout.SOUTH)
-
-        sortCombo.selectedItem = settings.state.sortModeEnum
-        viewCombo.selectedItem = settings.state.viewModeEnum
 
         subscribeToBranchChanges()
         refreshProjects()
@@ -105,10 +105,34 @@ private class ProjectSwitcherPanel(
         disposed = true
     }
 
-    private fun createToolbar(): JComponent {
+    fun createRefreshAction(): AnAction {
+        return object : DumbAwareAction(
+            "Refresh",
+            "Rescan configured project folders",
+            AllIcons.Actions.Refresh,
+        ) {
+            override fun actionPerformed(event: AnActionEvent) {
+                refreshProjects()
+            }
+
+            override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+        }
+    }
+
+    fun createOptionsActionGroup(): ActionGroup {
+        return DefaultActionGroup("Project Switcher Options", false).apply {
+            add(SortModeAction(SortMode.ALPHABETICAL))
+            add(SortModeAction(SortMode.RECENT))
+            addSeparator()
+            add(ViewModeAction(ViewMode.FLAT))
+            add(ViewModeAction(ViewMode.TREE))
+            addSeparator()
+            add(OpenSettingsAction())
+        }
+    }
+
+    private fun createSearchBar(): JComponent {
         val panel = JPanel(BorderLayout())
-        val selectors = JPanel(FlowLayout(FlowLayout.LEFT, 4, 0))
-        val actions = JPanel(FlowLayout(FlowLayout.RIGHT, 2, 0))
 
         searchField.textEditor.columns = 18
         searchField.text = settings.state.searchQuery
@@ -126,41 +150,35 @@ private class ProjectSwitcherPanel(
                 renderEntries()
             }
         })
-        sortCombo.renderer = enumRenderer()
-        viewCombo.renderer = enumRenderer()
-        sortCombo.addActionListener {
-            saveVisibleState()
-            settings.state.sortMode = (sortCombo.selectedItem as SortMode).name
-            renderEntries()
-        }
-        viewCombo.addActionListener {
-            saveVisibleState()
-            settings.state.viewMode = (viewCombo.selectedItem as ViewMode).name
-            renderEntries()
-        }
 
-        val refreshButton = JButton(AllIcons.Actions.Refresh)
-        refreshButton.toolTipText = "Refresh"
-        refreshButton.addActionListener { refreshProjects() }
-
-        val settingsButton = JButton(AllIcons.General.Settings)
-        settingsButton.toolTipText = "Settings"
-        settingsButton.addActionListener {
-            val changed = ShowSettingsUtil.getInstance().editConfigurable(project, ProjectSwitcherConfigurable())
-            if (changed) {
-                refreshProjects()
-            }
-        }
-
-        selectors.add(searchField)
-        selectors.add(sortCombo)
-        selectors.add(viewCombo)
-        actions.add(refreshButton)
-        actions.add(settingsButton)
-        panel.add(selectors, BorderLayout.WEST)
-        panel.add(actions, BorderLayout.EAST)
+        panel.add(searchField, BorderLayout.CENTER)
         panel.border = JBUI.Borders.emptyBottom(4)
         return panel
+    }
+
+    private fun setSortMode(mode: SortMode) {
+        if (settings.state.sortModeEnum == mode) return
+
+        saveVisibleState()
+        settings.state.sortMode = mode.name
+        ApplicationManager.getApplication().saveSettings()
+        renderEntries()
+    }
+
+    private fun setViewMode(mode: ViewMode) {
+        if (settings.state.viewModeEnum == mode) return
+
+        saveVisibleState()
+        settings.state.viewMode = mode.name
+        ApplicationManager.getApplication().saveSettings()
+        renderEntries()
+    }
+
+    private fun openSettings() {
+        val changed = ShowSettingsUtil.getInstance().editConfigurable(project, ProjectSwitcherConfigurable())
+        if (changed) {
+            refreshProjects()
+        }
     }
 
     private fun refreshProjects() {
@@ -197,6 +215,42 @@ private class ProjectSwitcherPanel(
                 }
             },
         )
+    }
+
+    private inner class SortModeAction(
+        private val mode: SortMode,
+    ) : ToggleAction("Sort: ${mode.displayText()}") {
+        override fun isSelected(event: AnActionEvent): Boolean = settings.state.sortModeEnum == mode
+
+        override fun setSelected(event: AnActionEvent, selected: Boolean) {
+            if (selected) setSortMode(mode)
+        }
+
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    }
+
+    private inner class ViewModeAction(
+        private val mode: ViewMode,
+    ) : ToggleAction("View: ${mode.displayText()}") {
+        override fun isSelected(event: AnActionEvent): Boolean = settings.state.viewModeEnum == mode
+
+        override fun setSelected(event: AnActionEvent, selected: Boolean) {
+            if (selected) setViewMode(mode)
+        }
+
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    }
+
+    private inner class OpenSettingsAction : DumbAwareAction(
+        "Settings...",
+        "Configure scanned folders",
+        AllIcons.General.Settings,
+    ) {
+        override fun actionPerformed(event: AnActionEvent) {
+            openSettings()
+        }
+
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
     }
 
     private fun renderEntries() {
@@ -874,26 +928,14 @@ private fun treeCellBackground(
     }
 }
 
-private fun enumRenderer(): DefaultListCellRenderer {
-    return object : DefaultListCellRenderer() {
-        override fun getListCellRendererComponent(
-            list: JList<*>?,
-            value: Any?,
-            index: Int,
-            isSelected: Boolean,
-            cellHasFocus: Boolean,
-        ): Component {
-            super.getListCellRendererComponent(list, value, index, isSelected, cellHasFocus)
-            text = when (value) {
-                SortMode.ALPHABETICAL -> "Alphabetical"
-                SortMode.RECENT -> "Recent"
-                ViewMode.FLAT -> "Flat"
-                ViewMode.TREE -> "Tree"
-                else -> value?.toString().orEmpty()
-            }
-            return this
-        }
-    }
+private fun SortMode.displayText(): String = when (this) {
+    SortMode.ALPHABETICAL -> "Alphabetical"
+    SortMode.RECENT -> "Recent"
+}
+
+private fun ViewMode.displayText(): String = when (this) {
+    ViewMode.FLAT -> "Flat"
+    ViewMode.TREE -> "Tree"
 }
 
 private val BRANCH_FOREGROUND = JBUI.CurrentTheme.Link.Foreground.ENABLED
