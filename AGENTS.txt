@@ -1,0 +1,91 @@
+# AGENTS.txt
+
+Project-specific guidance for future coding agents working in this repository.
+
+## Project Purpose
+
+This is an IntelliJ Platform plugin named "Project Switcher". It provides a native-looking Projects tool window for IntelliJ IDEA and Android Studio. The panel scans user-configured root folders, finds IDE/Gradle/Maven projects, shows each project's current Git branch, and opens projects in the current window or in a new window.
+
+The target user has multiple working copies of the same project on different branches, so branch visibility and fast switching are core behavior, not decoration.
+
+## Build And Runtime
+
+- Use PowerShell from the repository root.
+- Use `.\gradlew.bat` on Windows. Do not switch to `gradlew` unless the environment is explicitly non-Windows.
+- Important verification commands:
+  - `.\gradlew.bat test`
+  - `.\gradlew.bat buildPlugin`
+  - `.\gradlew.bat verifyPlugin` when compatibility/plugin metadata changes
+  - `.\gradlew.bat runIde` after substantial UI or plugin-behavior changes
+- `runIde` uses the sandbox under `build\idea-sandbox\IU-2025.2.4`.
+- The main IDE log for `runIde` is normally `build\idea-sandbox\IU-2025.2.4\log\idea.log`.
+- If `buildPlugin` or cleanup fails because a JAR is locked, a previous `runIde` IDE/Gradle process may still be running. Inspect processes before killing anything, and do not stop unrelated user IDE sessions.
+
+## Platform Baseline
+
+- Gradle IntelliJ Platform plugin: `org.jetbrains.intellij.platform`.
+- Kotlin JVM target: 21.
+- Java source/target compatibility: 21.
+- IntelliJ platform dependency currently targets `intellijIdea("2025.2.4")`.
+- Plugin since-build is currently `252.25557`.
+- `Git4Idea` is a bundled compile dependency and an optional plugin dependency. Keep it optional in `plugin.xml` so the base tool window still loads if Git support is unavailable.
+
+## Important Files
+
+- `build.gradle.kts` - IntelliJ Platform Gradle setup, bundled Git4Idea dependency, Java/Kotlin target, JAR packaging workaround.
+- `src/main/resources/META-INF/plugin.xml` - main plugin descriptor. Registers the `Projects` tool window and the application-level settings configurable.
+- `src/main/resources/META-INF/git-listener.xml` - optional Git4Idea extension descriptor for live branch updates.
+- `src/main/kotlin/cz/atomsoft/projectswitcher/projectswitcherplugin/MyToolWindow.kt` - main UI, sorting, filtering, tree/flat rendering, opening projects, hover and active highlight, state persistence hooks.
+- `ProjectSwitcherSettings.kt` - application-level persistent settings stored in `branch-project-switcher.xml`.
+- `ProjectScanner.kt` - filesystem project detection and `.git/HEAD` branch reading.
+- `ProjectIconProvider.kt` - IDEA-like project icons, using platform helpers reflectively with a colored monogram fallback.
+- `GitBranchChangeStartupActivity.kt`, `ProjectBranchChangeListener.kt`, `ProjectBranchUpdater.kt` - live Git branch update path.
+- `docs/plans/toolbar-widget-feature.md` and `docs/plans/toolbar-widget-feature_cs.md` - researched future plan for adding a toolbar widget similar to the IDE Project Widget.
+
+## Behavioral Contracts
+
+- Settings must be global/application-level, not per-project. Opening another project window must keep the same configured roots and panel state.
+- Persist all panel continuity state that affects orientation: search text, sort mode, view mode, tree expansion, and scroll position.
+- Project detection must not split a multi-module Gradle/Maven project into separate projects. Once `ProjectScanner` identifies a project root, it must not descend into that directory's children.
+- A directory is currently considered a project root if it contains `.idea`, `settings.gradle`, `settings.gradle.kts`, `build.gradle`, `build.gradle.kts`, `pom.xml`, or an `*.ipr` file.
+- Scanner must ignore heavy/internal folders such as `.git`, `.gradle`, `build`, `out`, `.idea_modules`, `node_modules`, and hidden folders except `.idea`.
+- Tree view should keep directories before project entries. Do not randomly mix folders and projects at the same level.
+- Recent sorting should come from IDE recent-project metadata (`RecentProjectsManagerBase`) rather than plugin-maintained timestamps.
+- Search filters by project folder/name and branch. The search text is intentionally persistent until the user clears it.
+- The active project should be visibly highlighted. Hover highlighting should follow native IDE list/tree behavior and should not fight the active-project marker.
+- Branch should be shown as a secondary line with the IDE Git branch icon, not squeezed onto the project-name line.
+- Project icons should look like the default IDE project switcher where possible. `ProjectIconProvider` intentionally uses reflective platform APIs first and only falls back to a colored monogram.
+
+## Git Branch Updates
+
+- Initial branch values are read by `ProjectScanner` from `.git/HEAD`.
+- Live branch updates are provided through Git4Idea:
+  - `GitBranchChangeStartupActivity` subscribes to `GitRepository.GIT_REPO_CHANGE` for each open IDE project.
+  - It publishes repository root and current branch/hash through the application message bus topic in `ProjectBranchChangeListener`.
+  - Every open plugin panel listens on the application bus, so a branch switch in one IDE window can update matching entries in other windows.
+- `ProjectBranchUpdater` updates entries whose project path equals the changed repository root or is under that repository root. Keep this path-normalized and case-insensitive for Windows.
+- Historical `ClassNotFoundException` entries for `ProjectSwitcherConfigurable` were from older broken packaging/sandbox state. If they reappear in a fresh run, inspect the built plugin JAR before changing runtime logic.
+
+## UI Notes
+
+- Keep the UI native to IDEA/Android Studio. Avoid demo-like custom styling.
+- Tool window id is `Projects`, intentionally similar to the built-in Project panel.
+- Tool window icon is currently `AllIcons.Nodes.Project`.
+- The settings configurable display name is `Project Switcher`.
+- Right click on a project should offer `Open in New Window`.
+- Left click should open the project in the active/current window.
+- The toolbar-widget feature has only been researched and documented. Do not implement it unless explicitly asked.
+
+## Testing Expectations
+
+- `ProjectScannerTest` covers project root detection, nested Gradle module suppression, overlapping roots, hidden directory skipping, detached HEAD, and gitdir files.
+- `ProjectBranchUpdaterTest` covers live branch update matching and no-op behavior.
+- Add or adjust focused tests when changing scanner semantics, branch update matching, or other pure logic.
+- UI-only Swing behavior may need `runIde` verification instead of unit tests.
+
+## Collaboration Rules For This Repo
+
+- Preserve unrelated user changes. This repository often has active uncommitted work.
+- Keep changes scoped to the requested plugin behavior.
+- Prefer existing IntelliJ Platform APIs and local patterns before introducing new abstractions.
+- If logs contain network warnings from JetBrains remote config or region mapping during `runIde`, do not treat them as plugin failures unless they reference this plugin or break the tested behavior.

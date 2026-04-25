@@ -4,6 +4,7 @@ import com.intellij.icons.AllIcons
 import com.intellij.ide.RecentProjectsManagerBase
 import com.intellij.ide.impl.ProjectUtil
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.Disposable
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.Project
 import com.intellij.openapi.project.DumbAware
@@ -65,13 +66,14 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
         val panel = ProjectSwitcherPanel(project)
         val content = ContentFactory.getInstance().createContent(panel, "", false)
+        content.setDisposer(panel)
         toolWindow.contentManager.addContent(content)
     }
 }
 
 private class ProjectSwitcherPanel(
     private val project: Project,
-) : JPanel(BorderLayout()) {
+) : JPanel(BorderLayout()), Disposable {
     private val settings = ProjectSwitcherSettings.getInstance()
     private val projectIconProvider = ProjectIconProvider()
     private val searchField = SearchTextField(false)
@@ -84,6 +86,7 @@ private class ProjectSwitcherPanel(
     private var renderedTree: Tree? = null
     private var renderedViewMode: ViewMode? = null
     private var restoringTreeExpansionState = false
+    private var disposed = false
 
     init {
         border = JBUI.Borders.empty(4)
@@ -94,7 +97,12 @@ private class ProjectSwitcherPanel(
         sortCombo.selectedItem = settings.state.sortModeEnum
         viewCombo.selectedItem = settings.state.viewModeEnum
 
+        subscribeToBranchChanges()
         refreshProjects()
+    }
+
+    override fun dispose() {
+        disposed = true
     }
 
     private fun createToolbar(): JComponent {
@@ -174,6 +182,21 @@ private class ProjectSwitcherPanel(
                 renderEntries()
             }
         }
+    }
+
+    private fun subscribeToBranchChanges() {
+        ApplicationManager.getApplication().messageBus.connect(this).subscribe(
+            ProjectBranchChangeListener.TOPIC,
+            ProjectBranchChangeListener { repositoryRoot, branch ->
+                SwingUtilities.invokeLater {
+                    if (project.isDisposed || disposed) return@invokeLater
+                    val updatedEntries = ProjectBranchUpdater.updateBranch(entries, repositoryRoot, branch)
+                    if (updatedEntries === entries) return@invokeLater
+                    entries = updatedEntries
+                    renderEntries()
+                }
+            },
+        )
     }
 
     private fun renderEntries() {

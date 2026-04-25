@@ -17,7 +17,7 @@ class ProjectSwitcherConfigurable : SearchableConfigurable {
 
     override fun getId(): String = "cz.atomsoft.projectswitcher.settings"
 
-    override fun getDisplayName(): String = "Branch Project Switcher"
+    override fun getDisplayName(): String = "Project Switcher"
 
     override fun createComponent(): JComponent {
         if (panel == null) {

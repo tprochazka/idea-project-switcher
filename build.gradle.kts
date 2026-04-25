@@ -22,6 +22,7 @@ dependencies {
 
     intellijPlatform {
         intellijIdea("2025.2.4")
+        bundledPlugin("Git4Idea")
         testFramework(org.jetbrains.intellij.platform.gradle.TestFrameworkType.Platform)
 
         // Add plugin dependencies for compilation here:

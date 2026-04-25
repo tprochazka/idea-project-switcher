@@ -5,7 +5,7 @@
 
     <!-- Public plugin name should be written in Title Case.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-name -->
-    <name>Branch Project Switcher</name>
+    <name>Project Switcher</name>
 
     <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
     <vendor>Atomsoft</vendor>
@@ -19,6 +19,7 @@
     <!-- Product and plugin compatibility requirements.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-compatibility.html -->
     <depends>com.intellij.modules.platform</depends>
+    <depends optional="true" config-file="git-listener.xml">Git4Idea</depends>
     <resource-bundle>messages.MyMessageBundle</resource-bundle>
     <!-- Extensions defined by the plugin.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
@@ -27,7 +28,7 @@
                     factoryClass="cz.atomsoft.projectswitcher.projectswitcherplugin.MyToolWindowFactory"
                     icon="AllIcons.Nodes.Project"/>
         <applicationConfigurable id="cz.atomsoft.projectswitcher.settings"
-                                 displayName="Branch Project Switcher"
+                                 displayName="Project Switcher"
                                  parentId="tools"
                                  instance="cz.atomsoft.projectswitcher.projectswitcherplugin.ProjectSwitcherConfigurable"/>
     </extensions>
