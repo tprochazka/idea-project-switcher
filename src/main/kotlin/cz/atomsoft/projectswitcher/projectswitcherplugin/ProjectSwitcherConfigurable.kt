@@ -48,6 +48,7 @@ class ProjectSwitcherConfigurable : SearchableConfigurable {
 
     override fun apply() {
         settings.state.rootPaths = modelPaths().toMutableList()
+        ProjectCatalogService.getInstance().refresh(settings.state.rootPaths, force = true)
     }
 
     override fun reset() {

@@ -96,6 +96,7 @@ private class ProjectSwitcherPanel(
     private val toolWindow: ToolWindow,
 ) : JPanel(BorderLayout()), Disposable {
     private val settings = ProjectSwitcherSettings.getInstance()
+    private val projectCatalog = ProjectCatalogService.getInstance()
     private val projectIconProvider = ProjectIconProvider()
     private val searchField = SearchTextField(false)
     private val statusLabel = JBLabel()
@@ -140,8 +141,9 @@ private class ProjectSwitcherPanel(
         add(contentPanel, BorderLayout.CENTER)
         add(statusLabel, BorderLayout.SOUTH)
 
-        subscribeToBranchChanges()
-        refreshProjects()
+        subscribeToCatalogChanges()
+        projectCatalog.ensureLoaded(settings.state.rootPaths.toList())
+        applyCatalogSnapshot(projectCatalog.snapshot())
     }
 
     override fun dispose() {
@@ -305,33 +307,7 @@ private class ProjectSwitcherPanel(
     private fun refreshProjects() {
         if (refreshInProgress) return
 
-        val roots = settings.state.rootPaths.toList()
-        if (roots.isEmpty()) {
-            entries = emptyList()
-            recentTimestampsByPath = emptyMap()
-            showNoConfiguredRoots()
-            return
-        }
-
-        statusLabel.text = "Scanning..."
-        setRefreshInProgress(true)
-        ApplicationManager.getApplication().executeOnPooledThread {
-            val scanned = runCatching { ProjectScanner.scan(roots) }
-            SwingUtilities.invokeLater {
-                setRefreshInProgress(false)
-                if (project.isDisposed || disposed) return@invokeLater
-                scanned
-                    .onSuccess {
-                        entries = it
-                        refreshRecentTimestampSnapshotIfAllowed()
-                        statusLabel.text = "${entries.size} project(s)"
-                        renderEntries()
-                    }
-                    .onFailure {
-                        statusLabel.text = "Scan failed"
-                    }
-            }
-        }
+        projectCatalog.refresh(settings.state.rootPaths.toList(), force = true)
     }
 
     private fun setRefreshInProgress(inProgress: Boolean) {
@@ -352,7 +328,7 @@ private class ProjectSwitcherPanel(
         renderedList = null
         renderedTree = null
         renderedViewMode = null
-        statusLabel.text = "No project folders configured"
+        statusLabel.text = ""
         contentPanel.add(createNoConfiguredRootsPanel(), BorderLayout.CENTER)
         contentPanel.revalidate()
         contentPanel.repaint()
@@ -400,19 +376,44 @@ private class ProjectSwitcherPanel(
         add(component, constraints)
     }
 
-    private fun subscribeToBranchChanges() {
+    private fun subscribeToCatalogChanges() {
         ApplicationManager.getApplication().messageBus.connect(this).subscribe(
-            ProjectBranchChangeListener.TOPIC,
-            ProjectBranchChangeListener { repositoryRoot, branch ->
+            ProjectCatalogListener.TOPIC,
+            ProjectCatalogListener { snapshot ->
                 SwingUtilities.invokeLater {
                     if (project.isDisposed || disposed) return@invokeLater
-                    val updatedEntries = ProjectBranchUpdater.updateBranch(entries, repositoryRoot, branch)
-                    if (updatedEntries === entries) return@invokeLater
-                    entries = updatedEntries
-                    renderEntries()
+                    applyCatalogSnapshot(snapshot)
                 }
             },
         )
+    }
+
+    private fun applyCatalogSnapshot(snapshot: ProjectCatalogSnapshot) {
+        entries = snapshot.entries
+        refreshRecentTimestampSnapshotIfAllowed()
+
+        when (snapshot.state) {
+            ProjectCatalogState.NO_ROOTS -> {
+                recentTimestampsByPath = emptyMap()
+                setRefreshInProgress(false)
+                showNoConfiguredRoots()
+            }
+            ProjectCatalogState.SCANNING -> {
+                setRefreshInProgress(true)
+                statusLabel.text = "Scanning..."
+                renderEntries()
+            }
+            ProjectCatalogState.READY -> {
+                setRefreshInProgress(false)
+                statusLabel.text = "${entries.size} project(s)"
+                renderEntries()
+            }
+            ProjectCatalogState.FAILED -> {
+                setRefreshInProgress(false)
+                statusLabel.text = "Scan failed"
+                renderEntries()
+            }
+        }
     }
 
     private inner class SortModeAction(
