@@ -19,22 +19,32 @@ import com.intellij.openapi.wm.ToolWindow
 import com.intellij.openapi.wm.ToolWindowFactory
 import com.intellij.ui.JBColor
 import com.intellij.ui.SearchTextField
+import com.intellij.ui.components.ActionLink
 import com.intellij.ui.components.JBLabel
 import com.intellij.ui.components.JBList
 import com.intellij.ui.components.JBScrollPane
 import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.hover.ListHoverListener
 import com.intellij.ui.treeStructure.Tree
+import com.intellij.util.Alarm
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
 import java.awt.Color
 import java.awt.Component
+import java.awt.FlowLayout
 import java.awt.Font
 import java.awt.Graphics
 import java.awt.Graphics2D
+import java.awt.GridBagConstraints
+import java.awt.GridBagLayout
+import java.awt.Insets
 import java.awt.Point
 import java.awt.RenderingHints
+import java.awt.event.ActionEvent
+import java.awt.event.FocusAdapter
+import java.awt.event.FocusEvent
+import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
@@ -42,6 +52,9 @@ import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Locale
+import java.util.concurrent.CancellationException
+import java.util.concurrent.atomic.AtomicBoolean
+import javax.swing.AbstractAction
 import javax.swing.BoxLayout
 import javax.swing.DefaultListModel
 import javax.swing.JComponent
@@ -51,6 +64,7 @@ import javax.swing.JMenuItem
 import javax.swing.JPanel
 import javax.swing.JPopupMenu
 import javax.swing.JTree
+import javax.swing.KeyStroke
 import javax.swing.ListCellRenderer
 import javax.swing.ListSelectionModel
 import javax.swing.SwingUtilities
@@ -84,12 +98,39 @@ private class ProjectSwitcherPanel(
     private val searchField = SearchTextField(false)
     private val statusLabel = JBLabel()
     private val contentPanel = JPanel(BorderLayout())
+    private val renderAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
+    private val renderLock = Any()
     private var entries: List<ProjectEntry> = emptyList()
+    private var recentTimestampsByPath: Map<String, Long> = emptyMap()
     private var renderedScrollPane: JBScrollPane? = null
+    private var renderedList: JBList<ProjectEntry>? = null
     private var renderedTree: Tree? = null
     private var renderedViewMode: ViewMode? = null
     private var restoringTreeExpansionState = false
+    private var renderRequestSequence = 0
+    @Volatile
+    private var latestRenderRequestId = 0
+    private var activeRenderCancellation: RenderCancellation? = null
+    private var renderInProgress = false
+    private var pendingRenderRequest: RenderRequest? = null
+    private var refreshInProgress = false
+    private var selectAllSearchTextAfterMouseRelease = false
     private var disposed = false
+    private val refreshAction = object : DumbAwareAction(
+        "Refresh",
+        "Rescan configured project folders",
+        AllIcons.Actions.Refresh,
+    ) {
+        override fun actionPerformed(event: AnActionEvent) {
+            refreshProjects()
+        }
+
+        override fun update(event: AnActionEvent) {
+            event.presentation.isEnabled = !refreshInProgress && !disposed
+        }
+
+        override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
+    }
 
     init {
         border = JBUI.Borders.empty(4)
@@ -103,20 +144,17 @@ private class ProjectSwitcherPanel(
 
     override fun dispose() {
         disposed = true
+        renderAlarm.cancelAllRequests()
+        synchronized(renderLock) {
+            activeRenderCancellation?.cancel()
+            pendingRenderRequest?.cancellation?.cancel()
+            pendingRenderRequest = null
+        }
+        refreshInProgress = false
     }
 
     fun createRefreshAction(): AnAction {
-        return object : DumbAwareAction(
-            "Refresh",
-            "Rescan configured project folders",
-            AllIcons.Actions.Refresh,
-        ) {
-            override fun actionPerformed(event: AnActionEvent) {
-                refreshProjects()
-            }
-
-            override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
-        }
+        return refreshAction
     }
 
     fun createOptionsActionGroup(): ActionGroup {
@@ -136,6 +174,8 @@ private class ProjectSwitcherPanel(
 
         searchField.textEditor.columns = 18
         searchField.text = settings.state.searchQuery
+        installSearchFieldNavigation()
+        installSearchFieldFocusBehavior()
         searchField.addDocumentListener(object : DocumentListener {
             override fun insertUpdate(event: DocumentEvent) = updateSearch()
 
@@ -146,8 +186,10 @@ private class ProjectSwitcherPanel(
             private fun updateSearch() {
                 saveVisibleState()
                 settings.state.searchQuery = searchField.text
-                ApplicationManager.getApplication().saveSettings()
-                renderEntries()
+                if (settings.state.searchQuery.trim().isEmpty()) {
+                    refreshRecentTimestampSnapshotIfAllowed()
+                }
+                renderEntries(SEARCH_DEBOUNCE_MS)
             }
         })
 
@@ -156,11 +198,86 @@ private class ProjectSwitcherPanel(
         return panel
     }
 
+    private fun installSearchFieldFocusBehavior() {
+        val textEditor = searchField.textEditor
+        textEditor.addFocusListener(object : FocusAdapter() {
+            override fun focusGained(event: FocusEvent) {
+                selectAllSearchTextLater()
+            }
+
+            override fun focusLost(event: FocusEvent) {
+                selectAllSearchTextAfterMouseRelease = false
+                settings.state.searchQuery = searchField.text
+                ApplicationManager.getApplication().saveSettings()
+            }
+        })
+        textEditor.addMouseListener(object : MouseAdapter() {
+            override fun mousePressed(event: MouseEvent) {
+                if (!textEditor.hasFocus()) {
+                    selectAllSearchTextAfterMouseRelease = true
+                    textEditor.requestFocusInWindow()
+                    event.consume()
+                }
+            }
+
+            override fun mouseReleased(event: MouseEvent) {
+                if (selectAllSearchTextAfterMouseRelease) {
+                    selectAllSearchTextAfterMouseRelease = false
+                    selectAllSearchTextLater()
+                    event.consume()
+                }
+            }
+        })
+    }
+
+    private fun selectAllSearchTextLater() {
+        SwingUtilities.invokeLater {
+            val textEditor = searchField.textEditor
+            if (!textEditor.hasFocus()) return@invokeLater
+
+            textEditor.select(0, textEditor.text.length)
+        }
+    }
+
+    private fun installSearchFieldNavigation() {
+        val actionKey = "focusProjectResults"
+        searchField.textEditor.inputMap.put(KeyStroke.getKeyStroke(KeyEvent.VK_DOWN, 0), actionKey)
+        searchField.textEditor.actionMap.put(actionKey, object : AbstractAction() {
+            override fun actionPerformed(event: ActionEvent) {
+                focusProjectResults()
+            }
+        })
+    }
+
+    private fun focusProjectResults() {
+        when (settings.state.viewModeEnum) {
+            ViewMode.FLAT -> {
+                val list = renderedList ?: return
+                if (list.model.size == 0) return
+                if (list.selectedIndex < 0) {
+                    list.selectedIndex = 0
+                    list.ensureIndexIsVisible(0)
+                }
+                list.requestFocusInWindow()
+            }
+            ViewMode.TREE -> {
+                val tree = renderedTree ?: return
+                if (tree.rowCount == 0) return
+                if (tree.selectionCount == 0) {
+                    tree.setSelectionRow(0)
+                    tree.scrollRowToVisible(0)
+                }
+                tree.requestFocusInWindow()
+            }
+        }
+    }
+
     private fun setSortMode(mode: SortMode) {
         if (settings.state.sortModeEnum == mode) return
 
         saveVisibleState()
         settings.state.sortMode = mode.name
+        refreshRecentTimestampSnapshotIfAllowed()
         ApplicationManager.getApplication().saveSettings()
         renderEntries()
     }
@@ -182,24 +299,101 @@ private class ProjectSwitcherPanel(
     }
 
     private fun refreshProjects() {
+        if (refreshInProgress) return
+
         val roots = settings.state.rootPaths.toList()
         if (roots.isEmpty()) {
             entries = emptyList()
-            statusLabel.text = "No folders configured"
-            renderEntries()
+            recentTimestampsByPath = emptyMap()
+            showNoConfiguredRoots()
             return
         }
 
         statusLabel.text = "Scanning..."
+        setRefreshInProgress(true)
         ApplicationManager.getApplication().executeOnPooledThread {
-            val scanned = ProjectScanner.scan(roots)
+            val scanned = runCatching { ProjectScanner.scan(roots) }
             SwingUtilities.invokeLater {
-                if (project.isDisposed) return@invokeLater
-                entries = scanned
-                statusLabel.text = "${entries.size} project(s)"
-                renderEntries()
+                setRefreshInProgress(false)
+                if (project.isDisposed || disposed) return@invokeLater
+                scanned
+                    .onSuccess {
+                        entries = it
+                        refreshRecentTimestampSnapshotIfAllowed()
+                        statusLabel.text = "${entries.size} project(s)"
+                        renderEntries()
+                    }
+                    .onFailure {
+                        statusLabel.text = "Scan failed"
+                    }
             }
         }
+    }
+
+    private fun setRefreshInProgress(inProgress: Boolean) {
+        refreshInProgress = inProgress
+        refreshAction.templatePresentation.isEnabled = !inProgress && !disposed
+    }
+
+    private fun showNoConfiguredRoots() {
+        renderAlarm.cancelAllRequests()
+        synchronized(renderLock) {
+            activeRenderCancellation?.cancel()
+            pendingRenderRequest?.cancellation?.cancel()
+            pendingRenderRequest = null
+        }
+        saveVisibleState()
+        contentPanel.removeAll()
+        renderedScrollPane = null
+        renderedList = null
+        renderedTree = null
+        renderedViewMode = null
+        statusLabel.text = "No project folders configured"
+        contentPanel.add(createNoConfiguredRootsPanel(), BorderLayout.CENTER)
+        contentPanel.revalidate()
+        contentPanel.repaint()
+    }
+
+    private fun createNoConfiguredRootsPanel(): JComponent {
+        val panel = JPanel(GridBagLayout()).apply {
+            isOpaque = false
+            border = JBUI.Borders.empty(24, 12)
+        }
+        val constraints = GridBagConstraints().apply {
+            gridx = 0
+            weightx = 1.0
+            anchor = GridBagConstraints.CENTER
+            fill = GridBagConstraints.HORIZONTAL
+        }
+
+        panel.addCentered(JBLabel("No project folders configured").apply {
+            horizontalAlignment = JLabel.CENTER
+            font = font.deriveFont(Font.BOLD)
+        }, constraints, bottom = 22)
+        panel.addCentered(JBLabel("Add folders to scan for IDE, Gradle, and Maven projects.").apply {
+            horizontalAlignment = JLabel.CENTER
+            foreground = UIUtil.getContextHelpForeground()
+        }, constraints, bottom = 12)
+        panel.addCentered(JPanel(FlowLayout(FlowLayout.CENTER, JBUI.scale(4), 0)).apply {
+            isOpaque = false
+            add(JBLabel(AllIcons.General.Settings))
+            add(ActionLink("Configure Folders...") {
+                openSettings()
+            })
+        }, constraints, bottom = 22)
+        panel.addCentered(JBLabel("Also available from the tool window overflow menu.").apply {
+            horizontalAlignment = JLabel.CENTER
+            foreground = UIUtil.getContextHelpForeground()
+            font = font.deriveFont(font.size2D - 1.0f)
+        }, constraints, bottom = 0)
+
+        return panel
+    }
+
+    private fun JPanel.addCentered(component: JComponent, constraints: GridBagConstraints, bottom: Int) {
+        constraints.gridy += 1
+        constraints.insets = Insets(0, 0, JBUI.scale(bottom), 0)
+        add(component, constraints)
     }
 
     private fun subscribeToBranchChanges() {
@@ -242,7 +436,7 @@ private class ProjectSwitcherPanel(
     }
 
     private inner class OpenSettingsAction : DumbAwareAction(
-        "Settings...",
+        "Configure Folders...",
         "Configure scanned folders",
         AllIcons.General.Settings,
     ) {
@@ -253,49 +447,173 @@ private class ProjectSwitcherPanel(
         override fun getActionUpdateThread(): ActionUpdateThread = ActionUpdateThread.EDT
     }
 
-    private fun renderEntries() {
+    private fun renderEntries(delayMillis: Int = 0) {
         saveVisibleState()
+        val request = createRenderRequest()
+        latestRenderRequestId = request.id
+        synchronized(renderLock) {
+            activeRenderCancellation?.cancel()
+            pendingRenderRequest?.cancellation?.cancel()
+            pendingRenderRequest = null
+        }
+        renderAlarm.cancelAllRequests()
+        renderAlarm.addRequest({ runRenderRequest(request) }, delayMillis)
+    }
+
+    private fun createRenderRequest(): RenderRequest {
+        val id = ++renderRequestSequence
+        return RenderRequest(
+            id = id,
+            entries = entries,
+            query = settings.state.searchQuery.trim(),
+            sortMode = settings.state.sortModeEnum,
+            viewMode = settings.state.viewModeEnum,
+            recentTimestampsByPath = recentTimestampsByPath,
+            cancellation = RenderCancellation(),
+        )
+    }
+
+    private fun runRenderRequest(request: RenderRequest) {
+        synchronized(renderLock) {
+            if (renderInProgress) {
+                pendingRenderRequest?.cancellation?.cancel()
+                pendingRenderRequest = request
+                return
+            }
+            renderInProgress = true
+            activeRenderCancellation = request.cancellation
+        }
+
+        try {
+            request.cancellation.throwIfCancelled()
+            val filtered = filteredEntries(request.entries, request.query, request.cancellation)
+            request.cancellation.throwIfCancelled()
+            val projects = filtered.sortedWith(
+                cancellableComparator(
+                    projectComparator(request.sortMode, request.recentTimestampsByPath),
+                    request.cancellation,
+                ),
+            )
+            request.cancellation.throwIfCancelled()
+
+            val result = RenderResult(
+                id = request.id,
+                query = request.query,
+                sortMode = request.sortMode,
+                viewMode = request.viewMode,
+                recentTimestampsByPath = request.recentTimestampsByPath,
+                projects = projects,
+            )
+
+            SwingUtilities.invokeLater {
+                if (request.cancellation.isCancelled) return@invokeLater
+                applyRenderResult(result)
+            }
+        } catch (_: CancellationException) {
+            // A newer search request superseded this one.
+        } finally {
+            val pendingRequest = synchronized(renderLock) {
+                renderInProgress = false
+                if (activeRenderCancellation === request.cancellation) {
+                    activeRenderCancellation = null
+                }
+                val pending = pendingRenderRequest
+                pendingRenderRequest = null
+                pending
+            }
+
+            if (pendingRequest != null) {
+                runRenderRequest(pendingRequest)
+            }
+        }
+    }
+
+    private fun applyRenderResult(result: RenderResult) {
+        if (project.isDisposed || disposed || result.id != latestRenderRequestId) return
+
         contentPanel.removeAll()
         renderedScrollPane = null
+        renderedList = null
         renderedTree = null
-        renderedViewMode = settings.state.viewModeEnum
-        val sorted = filteredEntries().sortedWith(projectComparator())
-        val component = when (settings.state.viewModeEnum) {
-            ViewMode.FLAT -> createFlatList(sorted)
-            ViewMode.TREE -> createTree(sorted)
+        renderedViewMode = result.viewMode
+        val component = when (result.viewMode) {
+            ViewMode.FLAT -> createFlatList(result.projects, resetScroll = result.query.isNotEmpty())
+            ViewMode.TREE -> createTree(
+                projects = result.projects,
+                sortMode = result.sortMode,
+                recentTimestampsByPath = result.recentTimestampsByPath,
+                expandSearchMatches = result.query.isNotEmpty(),
+            )
         }
         contentPanel.add(component, BorderLayout.CENTER)
         contentPanel.revalidate()
         contentPanel.repaint()
     }
 
-    private fun projectComparator(): Comparator<ProjectEntry> {
-        return when (settings.state.sortModeEnum) {
+    private fun projectComparator(
+        sortMode: SortMode,
+        recentTimestampsByPath: Map<String, Long>,
+    ): Comparator<ProjectEntry> {
+        return when (sortMode) {
             SortMode.ALPHABETICAL -> Comparator { left, right -> compareProjectsByNameAndPath(left, right) }
-            SortMode.RECENT -> {
-                val recent = RecentProjectsManagerBase.getInstanceEx()
-                Comparator { left, right ->
-                    val byTimestamp = recentTimestamp(right, recent).compareTo(recentTimestamp(left, recent))
-                    if (byTimestamp != 0) byTimestamp else compareProjectsByNameAndPath(left, right)
-                }
+            SortMode.RECENT -> Comparator { left, right ->
+                val byTimestamp = recentTimestamp(right, recentTimestampsByPath)
+                    .compareTo(recentTimestamp(left, recentTimestampsByPath))
+                if (byTimestamp != 0) byTimestamp else compareProjectsByNameAndPath(left, right)
             }
         }
     }
 
-    private fun filteredEntries(): List<ProjectEntry> {
-        val query = settings.state.searchQuery.trim()
+    private fun filteredEntries(
+        entries: List<ProjectEntry>,
+        query: String,
+        cancellation: RenderCancellation,
+    ): List<ProjectEntry> {
         if (query.isEmpty()) return entries
 
-        return entries.filter { entry ->
+        return entries.filterIndexed { index, entry ->
+            if (index % CANCELLATION_CHECK_INTERVAL == 0) cancellation.throwIfCancelled()
             entry.name.contains(query, ignoreCase = true) ||
                 entry.branch?.contains(query, ignoreCase = true) == true
         }
     }
 
-    private fun recentTimestamp(entry: ProjectEntry, recent: RecentProjectsManagerBase): Long {
-        return recent.getActivationTimestamp(entry.path.toString())
-            ?: recent.getProjectMetaInfo(entry.path.toString())?.projectOpenTimestamp
-            ?: 0L
+    private fun cancellableComparator(
+        comparator: Comparator<ProjectEntry>,
+        cancellation: RenderCancellation,
+    ): Comparator<ProjectEntry> {
+        var comparisons = 0
+        return Comparator { left, right ->
+            if (++comparisons % CANCELLATION_CHECK_INTERVAL == 0) cancellation.throwIfCancelled()
+            comparator.compare(left, right)
+        }
+    }
+
+    private fun createRecentTimestampSnapshot(entries: List<ProjectEntry>): Map<String, Long> {
+        if (entries.isEmpty()) return emptyMap()
+
+        val recent = RecentProjectsManagerBase.getInstanceEx()
+        return entries.associate { entry ->
+            entry.path.toString() to (
+                recent.getActivationTimestamp(entry.path.toString())
+                    ?: recent.getProjectMetaInfo(entry.path.toString())?.projectOpenTimestamp
+                    ?: 0L
+                )
+        }
+    }
+
+    private fun recentTimestamp(entry: ProjectEntry, recentTimestampsByPath: Map<String, Long>): Long {
+        return recentTimestampsByPath[entry.path.toString()] ?: 0L
+    }
+
+    private fun refreshRecentTimestampSnapshotIfAllowed() {
+        if (settings.state.sortModeEnum != SortMode.RECENT) {
+            recentTimestampsByPath = emptyMap()
+            return
+        }
+        if (settings.state.searchQuery.trim().isNotEmpty()) return
+
+        recentTimestampsByPath = createRecentTimestampSnapshot(entries)
     }
 
     private fun compareProjectsByNameAndPath(left: ProjectEntry, right: ProjectEntry): Int {
@@ -304,7 +622,7 @@ private class ProjectSwitcherPanel(
         return String.CASE_INSENSITIVE_ORDER.compare(left.path.toString(), right.path.toString())
     }
 
-    private fun createFlatList(projects: List<ProjectEntry>): JComponent {
+    private fun createFlatList(projects: List<ProjectEntry>, resetScroll: Boolean): JComponent {
         val model = DefaultListModel<ProjectEntry>()
         projects.forEach(model::addElement)
         val list = JBList(model)
@@ -316,14 +634,24 @@ private class ProjectSwitcherPanel(
             val index = list.locationToIndex(event.point)
             if (index >= 0) model.getElementAt(index) else null
         })
-        val scrollPane = JBScrollPane(list)
+        val scrollPane = createProjectScrollPane(list)
         registerScrollPersistence(scrollPane, ViewMode.FLAT)
-        restoreScrollPosition(scrollPane, settings.state.flatScrollX, settings.state.flatScrollY)
+        if (resetScroll) {
+            restoreScrollPosition(scrollPane, 0, 0)
+        } else {
+            restoreScrollPosition(scrollPane, settings.state.flatScrollX, settings.state.flatScrollY)
+        }
         renderedScrollPane = scrollPane
+        renderedList = list
         return scrollPane
     }
 
-    private fun createTree(projects: List<ProjectEntry>): JComponent {
+    private fun createTree(
+        projects: List<ProjectEntry>,
+        sortMode: SortMode,
+        recentTimestampsByPath: Map<String, Long>,
+        expandSearchMatches: Boolean,
+    ): JComponent {
         val root = DefaultMutableTreeNode("Projects")
         val rootNodes = linkedMapOf<Path, DefaultMutableTreeNode>()
 
@@ -355,7 +683,7 @@ private class ProjectSwitcherPanel(
             }
             current.add(DefaultMutableTreeNode(entry))
         }
-        sortTreeChildren(root, projectComparator())
+        sortTreeChildren(root, projectComparator(sortMode, recentTimestampsByPath))
 
         val tree = ProjectTree(DefaultTreeModel(root)) { activeProjectPathIds() }
         tree.isRootVisible = false
@@ -375,13 +703,29 @@ private class ProjectSwitcherPanel(
                 if (!restoringTreeExpansionState) rememberCollapsedTreePath(event.path)
             }
         })
-        restoreTreeExpansionState(tree)
-        val scrollPane = JBScrollPane(tree)
+        if (expandSearchMatches) {
+            expandAllDirectories(tree)
+        } else {
+            restoreTreeExpansionState(tree)
+        }
+        val scrollPane = createProjectScrollPane(tree)
         registerScrollPersistence(scrollPane, ViewMode.TREE)
-        restoreScrollPosition(scrollPane, settings.state.treeScrollX, settings.state.treeScrollY)
+        if (expandSearchMatches) {
+            restoreScrollPosition(scrollPane, 0, 0)
+        } else {
+            restoreScrollPosition(scrollPane, settings.state.treeScrollX, settings.state.treeScrollY)
+        }
         renderedTree = tree
+        renderedList = null
         renderedScrollPane = scrollPane
         return scrollPane
+    }
+
+    private fun createProjectScrollPane(view: Component): JBScrollPane {
+        return JBScrollPane(view).apply {
+            border = JBUI.Borders.empty()
+            viewportBorder = JBUI.Borders.empty()
+        }
     }
 
     private fun findOrCreateDirectoryNode(parent: DefaultMutableTreeNode, name: String, id: String): DefaultMutableTreeNode {
@@ -449,6 +793,26 @@ private class ProjectSwitcherPanel(
             expandDirectoryNodes(tree, root, expandedIds)
         } finally {
             restoringTreeExpansionState = false
+        }
+    }
+
+    private fun expandAllDirectories(tree: Tree) {
+        restoringTreeExpansionState = true
+        try {
+            val root = tree.model.root as DefaultMutableTreeNode
+            expandAllDirectoryNodes(tree, root)
+        } finally {
+            restoringTreeExpansionState = false
+        }
+    }
+
+    private fun expandAllDirectoryNodes(tree: Tree, node: DefaultMutableTreeNode) {
+        for (i in 0 until node.childCount) {
+            expandAllDirectoryNodes(tree, node.getChildAt(i) as DefaultMutableTreeNode)
+        }
+
+        if (node.userObject is DirectoryNode) {
+            tree.expandPath(TreePath(node.path))
         }
     }
 
@@ -583,6 +947,40 @@ private class ProjectSwitcherPanel(
 }
 
 private data class DirectoryNode(val name: String, val id: String)
+
+private data class RenderRequest(
+    val id: Int,
+    val entries: List<ProjectEntry>,
+    val query: String,
+    val sortMode: SortMode,
+    val viewMode: ViewMode,
+    val recentTimestampsByPath: Map<String, Long>,
+    val cancellation: RenderCancellation,
+)
+
+private data class RenderResult(
+    val id: Int,
+    val query: String,
+    val sortMode: SortMode,
+    val viewMode: ViewMode,
+    val recentTimestampsByPath: Map<String, Long>,
+    val projects: List<ProjectEntry>,
+)
+
+private class RenderCancellation {
+    private val cancelled = AtomicBoolean(false)
+
+    val isCancelled: Boolean
+        get() = cancelled.get()
+
+    fun cancel() {
+        cancelled.set(true)
+    }
+
+    fun throwIfCancelled() {
+        if (cancelled.get()) throw CancellationException()
+    }
+}
 
 private fun activeProjectPathIds(project: Project): Set<String> {
     val paths = linkedSetOf<Path>()
@@ -949,6 +1347,10 @@ private val TREE_ROW_MARKER_HORIZONTAL_INSET = JBUI.scale(12)
 private val TREE_ROW_MARKER_VERTICAL_INSET = JBUI.scale(1)
 
 private val TREE_ROW_MARKER_ARC = JBUI.scale(6)
+
+private const val SEARCH_DEBOUNCE_MS = 100
+
+private const val CANCELLATION_CHECK_INTERVAL = 50
 
 private val ACTIVE_PROJECT_BACKGROUND = JBColor(
     Color(0xE7EAEE),
