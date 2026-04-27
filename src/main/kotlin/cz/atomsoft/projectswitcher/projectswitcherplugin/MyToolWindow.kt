@@ -51,6 +51,7 @@ import java.awt.event.MouseMotionAdapter
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
+import java.util.Collections
 import java.util.Locale
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
@@ -81,7 +82,7 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
     override fun shouldBeAvailable(project: Project) = true
 
     override fun createToolWindowContent(project: Project, toolWindow: ToolWindow) {
-        val panel = ProjectSwitcherPanel(project)
+        val panel = ProjectSwitcherPanel(project, toolWindow)
         toolWindow.setTitleActions(listOf(panel.createRefreshAction()))
         toolWindow.setAdditionalGearActions(panel.createOptionsActionGroup())
         val content = ContentFactory.getInstance().createContent(panel, "", false)
@@ -92,6 +93,7 @@ class MyToolWindowFactory : ToolWindowFactory, DumbAware {
 
 private class ProjectSwitcherPanel(
     private val project: Project,
+    private val toolWindow: ToolWindow,
 ) : JPanel(BorderLayout()), Disposable {
     private val settings = ProjectSwitcherSettings.getInstance()
     private val projectIconProvider = ProjectIconProvider()
@@ -144,6 +146,8 @@ private class ProjectSwitcherPanel(
 
     override fun dispose() {
         disposed = true
+        toolWindow.setTitleActions(Collections.emptyList())
+        toolWindow.setAdditionalGearActions(DefaultActionGroup())
         renderAlarm.cancelAllRequests()
         synchronized(renderLock) {
             activeRenderCancellation?.cancel()
