@@ -27,6 +27,7 @@ import com.intellij.ui.content.ContentFactory
 import com.intellij.ui.hover.ListHoverListener
 import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.Alarm
+import com.intellij.openapi.util.io.FileUtil
 import com.intellij.util.ui.JBUI
 import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
@@ -103,6 +104,7 @@ private class ProjectSwitcherPanel(
     private val contentPanel = JPanel(BorderLayout())
     private val renderAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
     private val renderLock = Any()
+    private var catalogItems: List<ProjectCatalogItem> = emptyList()
     private var entries: List<ProjectEntry> = emptyList()
     private var recentTimestampsByPath: Map<String, Long> = emptyMap()
     private var renderedScrollPane: JBScrollPane? = null
@@ -389,7 +391,8 @@ private class ProjectSwitcherPanel(
     }
 
     private fun applyCatalogSnapshot(snapshot: ProjectCatalogSnapshot) {
-        entries = snapshot.entries
+        catalogItems = snapshot.items
+        entries = catalogItems.map { it.entry }
         refreshRecentTimestampSnapshotIfAllowed()
 
         when (snapshot.state) {
@@ -469,8 +472,9 @@ private class ProjectSwitcherPanel(
         val id = ++renderRequestSequence
         return RenderRequest(
             id = id,
-            entries = entries,
-            query = settings.state.searchQuery.trim(),
+            items = catalogItems,
+            query = normalizeSearchText(settings.state.searchQuery),
+            hasQuery = settings.state.searchQuery.trim().isNotEmpty(),
             sortMode = settings.state.sortModeEnum,
             viewMode = settings.state.viewModeEnum,
             recentTimestampsByPath = recentTimestampsByPath,
@@ -491,7 +495,7 @@ private class ProjectSwitcherPanel(
 
         try {
             request.cancellation.throwIfCancelled()
-            val filtered = filteredEntries(request.entries, request.query, request.cancellation)
+            val filtered = filteredEntries(request.items, request.query, request.cancellation)
             request.cancellation.throwIfCancelled()
             val projects = filtered.sortedWith(
                 cancellableComparator(
@@ -503,7 +507,7 @@ private class ProjectSwitcherPanel(
 
             val result = RenderResult(
                 id = request.id,
-                query = request.query,
+                hasQuery = request.hasQuery,
                 sortMode = request.sortMode,
                 viewMode = request.viewMode,
                 recentTimestampsByPath = request.recentTimestampsByPath,
@@ -542,12 +546,12 @@ private class ProjectSwitcherPanel(
         renderedTree = null
         renderedViewMode = result.viewMode
         val component = when (result.viewMode) {
-            ViewMode.FLAT -> createFlatList(result.projects, resetScroll = result.query.isNotEmpty())
+            ViewMode.FLAT -> createFlatList(result.projects, resetScroll = result.hasQuery)
             ViewMode.TREE -> createTree(
                 projects = result.projects,
                 sortMode = result.sortMode,
                 recentTimestampsByPath = result.recentTimestampsByPath,
-                expandSearchMatches = result.query.isNotEmpty(),
+                expandSearchMatches = result.hasQuery,
             )
         }
         contentPanel.add(component, BorderLayout.CENTER)
@@ -570,16 +574,15 @@ private class ProjectSwitcherPanel(
     }
 
     private fun filteredEntries(
-        entries: List<ProjectEntry>,
+        items: List<ProjectCatalogItem>,
         query: String,
         cancellation: RenderCancellation,
     ): List<ProjectEntry> {
-        if (query.isEmpty()) return entries
+        if (query.isEmpty()) return items.map { it.entry }
 
-        return entries.filterIndexed { index, entry ->
+        return items.mapIndexedNotNull { index, item ->
             if (index % CANCELLATION_CHECK_INTERVAL == 0) cancellation.throwIfCancelled()
-            entry.name.contains(query, ignoreCase = true) ||
-                entry.branch?.contains(query, ignoreCase = true) == true
+            item.entry.takeIf { item.searchKey.contains(query) }
         }
     }
 
@@ -599,12 +602,20 @@ private class ProjectSwitcherPanel(
 
         val recent = RecentProjectsManagerBase.getInstanceEx()
         return entries.associate { entry ->
-            entry.path.toString() to (
-                recent.getActivationTimestamp(entry.path.toString())
-                    ?: recent.getProjectMetaInfo(entry.path.toString())?.projectOpenTimestamp
-                    ?: 0L
-                )
+            entry.path.toString() to recentTimestamp(entry, recent)
         }
+    }
+
+    private fun recentTimestamp(entry: ProjectEntry, recent: RecentProjectsManagerBase): Long {
+        return recentPathCandidates(entry).firstNotNullOfOrNull { path ->
+            recent.getActivationTimestamp(path)
+        } ?: 0L
+    }
+
+    private fun recentPathCandidates(entry: ProjectEntry): List<String> {
+        val path = entry.path.toAbsolutePath().normalize().toString()
+        val systemIndependentPath = FileUtil.toSystemIndependentName(path)
+        return listOf(path, systemIndependentPath).distinct()
     }
 
     private fun recentTimestamp(entry: ProjectEntry, recentTimestampsByPath: Map<String, Long>): Long {
@@ -616,7 +627,6 @@ private class ProjectSwitcherPanel(
             recentTimestampsByPath = emptyMap()
             return
         }
-        if (settings.state.searchQuery.trim().isNotEmpty()) return
 
         recentTimestampsByPath = createRecentTimestampSnapshot(entries)
     }
@@ -955,8 +965,9 @@ private data class DirectoryNode(val name: String, val id: String)
 
 private data class RenderRequest(
     val id: Int,
-    val entries: List<ProjectEntry>,
+    val items: List<ProjectCatalogItem>,
     val query: String,
+    val hasQuery: Boolean,
     val sortMode: SortMode,
     val viewMode: ViewMode,
     val recentTimestampsByPath: Map<String, Long>,
@@ -965,7 +976,7 @@ private data class RenderRequest(
 
 private data class RenderResult(
     val id: Int,
-    val query: String,
+    val hasQuery: Boolean,
     val sortMode: SortMode,
     val viewMode: ViewMode,
     val recentTimestampsByPath: Map<String, Long>,

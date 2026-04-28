@@ -4,6 +4,8 @@ import com.intellij.openapi.Disposable
 import com.intellij.openapi.application.ApplicationManager
 import com.intellij.openapi.components.Service
 import java.nio.file.Paths
+import java.text.Normalizer
+import java.util.Locale
 
 @Service(Service.Level.APP)
 class ProjectCatalogService : Disposable {
@@ -36,7 +38,7 @@ class ProjectCatalogService : Disposable {
                 scanSequence++
                 currentSnapshot = ProjectCatalogSnapshot(
                     rootPaths = emptyList(),
-                    entries = emptyList(),
+                    items = emptyList(),
                     state = ProjectCatalogState.NO_ROOTS,
                 )
                 currentSnapshot
@@ -64,10 +66,10 @@ class ProjectCatalogService : Disposable {
             }
 
             val id = ++scanSequence
-            val retainedEntries = current.entries.takeIf { current.rootPaths == normalizedRoots }.orEmpty()
+            val retainedItems = current.items.takeIf { current.rootPaths == normalizedRoots }.orEmpty()
             currentSnapshot = ProjectCatalogSnapshot(
                 rootPaths = normalizedRoots,
-                entries = retainedEntries,
+                items = retainedItems,
                 state = ProjectCatalogState.SCANNING,
             )
             ScanRequest(id, normalizedRoots, currentSnapshot)
@@ -83,14 +85,14 @@ class ProjectCatalogService : Disposable {
                     onSuccess = { entries ->
                         ProjectCatalogSnapshot(
                             rootPaths = request.rootPaths,
-                            entries = entries,
+                            items = entries.toCatalogItems(),
                             state = ProjectCatalogState.READY,
                         )
                     },
                     onFailure = {
                         ProjectCatalogSnapshot(
                             rootPaths = request.rootPaths,
-                            entries = currentSnapshot.entries,
+                            items = currentSnapshot.items,
                             state = ProjectCatalogState.FAILED,
                         )
                     },
@@ -111,10 +113,11 @@ class ProjectCatalogService : Disposable {
 
     private fun updateBranch(repositoryRoot: String, branch: String?) {
         val snapshot = synchronized(lock) {
-            val updatedEntries = ProjectBranchUpdater.updateBranch(currentSnapshot.entries, repositoryRoot, branch)
-            if (updatedEntries === currentSnapshot.entries) return
+            val currentEntries = currentSnapshot.items.map { it.entry }
+            val updatedEntries = ProjectBranchUpdater.updateBranch(currentEntries, repositoryRoot, branch)
+            if (updatedEntries === currentEntries) return
 
-            currentSnapshot = currentSnapshot.copy(entries = updatedEntries)
+            currentSnapshot = currentSnapshot.copy(items = updatedEntries.toCatalogItems())
             currentSnapshot
         }
         publish(snapshot)
@@ -145,8 +148,13 @@ class ProjectCatalogService : Disposable {
 
 data class ProjectCatalogSnapshot(
     val rootPaths: List<String> = emptyList(),
-    val entries: List<ProjectEntry> = emptyList(),
+    val items: List<ProjectCatalogItem> = emptyList(),
     val state: ProjectCatalogState = ProjectCatalogState.NO_ROOTS,
+)
+
+data class ProjectCatalogItem(
+    val entry: ProjectEntry,
+    val searchKey: String,
 )
 
 enum class ProjectCatalogState {
@@ -161,3 +169,36 @@ private data class ScanRequest(
     val rootPaths: List<String>,
     val scanningSnapshot: ProjectCatalogSnapshot,
 )
+
+fun createProjectSearchKey(entry: ProjectEntry): String {
+    return normalizeSearchText("${entry.name} ${entry.branch.orEmpty()}")
+}
+
+fun normalizeSearchText(text: String): String {
+    val withoutDiacritics = Normalizer.normalize(text.lowercase(Locale.ROOT), Normalizer.Form.NFD)
+    val builder = StringBuilder(withoutDiacritics.length)
+
+    for (char in withoutDiacritics) {
+        if (char.category == CharCategory.NON_SPACING_MARK) continue
+
+        val normalizedChar = when (char) {
+            'y' -> 'i'
+            'z' -> 's'
+            else -> char
+        }
+        if (normalizedChar.isLetterOrDigit()) {
+            builder.append(normalizedChar)
+        }
+    }
+
+    return builder.toString()
+}
+
+private fun List<ProjectEntry>.toCatalogItems(): List<ProjectCatalogItem> {
+    return map { entry ->
+        ProjectCatalogItem(
+            entry = entry,
+            searchKey = createProjectSearchKey(entry),
+        )
+    }
+}
