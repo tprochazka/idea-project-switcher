@@ -4,7 +4,7 @@ Project-specific guidance for future coding agents working in this repository.
 
 ## Project Purpose
 
-This is an IntelliJ Platform plugin named "Project Switcher". It provides a native-looking Projects tool window for IntelliJ IDEA and Android Studio. The panel scans user-configured root folders, finds IDE/Gradle/Maven projects, shows each project's current Git branch, and opens projects in the current window or in a new window.
+This is an IntelliJ Platform plugin named "Project Switcher". It provides a native-looking Project Switcher tool window for IntelliJ IDEA and Android Studio. The panel scans user-configured root folders, finds IDE/Gradle/Maven projects, shows each project's current Git branch, and opens projects in the current window or in a new window.
 
 The target user has multiple working copies of the same project on different branches, so branch visibility and fast switching are core behavior, not decoration.
 
@@ -33,9 +33,9 @@ The target user has multiple working copies of the same project on different bra
 ## Important Files
 
 - `build.gradle.kts` - IntelliJ Platform Gradle setup, bundled Git4Idea dependency, Java/Kotlin target, JAR packaging workaround.
-- `src/main/resources/META-INF/plugin.xml` - main plugin descriptor. Registers the `Projects` tool window and the application-level settings configurable.
+- `src/main/resources/META-INF/plugin.xml` - main plugin descriptor. Registers the `Project Switcher` tool window and the application-level settings configurable.
 - `src/main/resources/META-INF/git-listener.xml` - optional Git4Idea extension descriptor for live branch updates.
-- `src/main/kotlin/cz/atomsoft/projectswitcher/projectswitcherplugin/MyToolWindow.kt` - main UI, sorting, filtering, tree/flat rendering, opening projects, hover and active highlight, state persistence hooks.
+- `src/main/kotlin/cz/atomsoft/ideaplugin/projectswitcher/MyToolWindow.kt` - main UI, sorting, filtering, tree/flat rendering, opening projects, hover and active highlight, state persistence hooks.
 - `ProjectSwitcherSettings.kt` - application-level persistent settings stored in `branch-project-switcher.xml`.
 - `ProjectScanner.kt` - filesystem project detection and `.git/HEAD` branch reading.
 - `ProjectIconProvider.kt` - IDEA-like project icons, using platform helpers reflectively with a colored monogram fallback.
@@ -69,7 +69,7 @@ The target user has multiple working copies of the same project on different bra
 ## UI Notes
 
 - Keep the UI native to IDEA/Android Studio. Avoid demo-like custom styling.
-- Tool window id is `Projects`, intentionally similar to the built-in Project panel.
+- Tool window id and stripe title are `Project Switcher`.
 - Tool window icon is currently `AllIcons.Nodes.Project`.
 - The settings configurable display name is `Project Switcher`.
 - Keep top-level controls in native tool-window chrome where practical. Refresh is a title action; sort/view/settings live directly in the tool-window overflow/gear actions, not in a plugin submenu. The content toolbar should stay focused on search.

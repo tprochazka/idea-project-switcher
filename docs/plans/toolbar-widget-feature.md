@@ -10,8 +10,8 @@ This is a future feature plan only. No implementation has been done yet.
 
 The plugin currently exposes its primary UI as a tool window:
 
-- Tool window id: `Projects`
-- Factory: `cz.atomsoft.projectswitcher.projectswitcherplugin.MyToolWindowFactory`
+- Tool window id: `Project Switcher`
+- Factory: `cz.atomsoft.ideaplugin.projectswitcher.MyToolWindowFactory`
 - Registered from `src/main/resources/META-INF/plugin.xml`
 - Global settings are application-level, stored through `ProjectSwitcherSettings`
 - The panel supports:
@@ -114,7 +114,7 @@ Recommended shape:
 The toolbar widget itself should show only high-signal information:
 
 - project icon
-- current project name or a stable label such as `Projects`
+- current project name or a stable label such as `Project Switcher`
 - optionally current Git branch
 - dropdown arrow/chevron using native toolbar styling
 
@@ -158,7 +158,7 @@ Example registration shape:
 ```xml
 <actions>
   <action id="BranchProjectSwitcher.ToolbarWidget"
-          class="cz.atomsoft.projectswitcher.projectswitcherplugin.ToolbarProjectSwitcherAction"
+          class="cz.atomsoft.ideaplugin.projectswitcher.ToolbarProjectSwitcherAction"
           text="Project Switcher"
           icon="AllIcons.Nodes.Project">
     <add-to-group group-id="MainToolbarLeft"
@@ -202,7 +202,7 @@ Example shape:
 ```xml
 <actions>
   <action id="BranchProjectSwitcher.OpenPopup"
-          class="cz.atomsoft.projectswitcher.projectswitcherplugin.OpenBranchProjectSwitcherPopupAction"
+          class="cz.atomsoft.ideaplugin.projectswitcher.OpenBranchProjectSwitcherPopupAction"
           text="Project Switcher"
           icon="AllIcons.Nodes.Project">
     <add-to-group group-id="ProjectWidget.Actions"/>

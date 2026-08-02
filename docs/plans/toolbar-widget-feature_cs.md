@@ -10,8 +10,8 @@ Toto je pouze plán budoucí funkce. Implementace zatím nebyla provedena.
 
 Plugin má hlavní UI jako tool window:
 
-- Tool window id: `Projects`
-- Factory: `cz.atomsoft.projectswitcher.projectswitcherplugin.MyToolWindowFactory`
+- Tool window id: `Project Switcher`
+- Factory: `cz.atomsoft.ideaplugin.projectswitcher.MyToolWindowFactory`
 - Registrace: `src/main/resources/META-INF/plugin.xml`
 - Globální nastavení je aplikační, přes `ProjectSwitcherSettings`
 - Panel podporuje:
@@ -114,7 +114,7 @@ Doporučený tvar:
 Samotný toolbar widget by měl zobrazovat jen nejdůležitější informaci:
 
 - projektovou ikonu
-- aktuální název projektu nebo stabilní label typu `Projects`
+- aktuální název projektu nebo stabilní label typu `Project Switcher`
 - volitelně aktuální Git branch
 - dropdown šipku/chevron v nativním toolbar stylu
 
@@ -158,7 +158,7 @@ Příklad tvaru registrace:
 ```xml
 <actions>
   <action id="BranchProjectSwitcher.ToolbarWidget"
-          class="cz.atomsoft.projectswitcher.projectswitcherplugin.ToolbarProjectSwitcherAction"
+          class="cz.atomsoft.ideaplugin.projectswitcher.ToolbarProjectSwitcherAction"
           text="Project Switcher"
           icon="AllIcons.Nodes.Project">
     <add-to-group group-id="MainToolbarLeft"
@@ -202,7 +202,7 @@ Příklad tvaru:
 ```xml
 <actions>
   <action id="BranchProjectSwitcher.OpenPopup"
-          class="cz.atomsoft.projectswitcher.projectswitcherplugin.OpenBranchProjectSwitcherPopupAction"
+          class="cz.atomsoft.ideaplugin.projectswitcher.OpenBranchProjectSwitcherPopupAction"
           text="Project Switcher"
           icon="AllIcons.Nodes.Project">
     <add-to-group group-id="ProjectWidget.Actions"/>

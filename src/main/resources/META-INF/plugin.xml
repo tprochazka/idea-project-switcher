@@ -1,14 +1,32 @@
+<!--
+Copyright (C) 2026 ATomSoft
+
+This file is part of Project Switcher.
+
+Project Switcher is free software: you can redistribute it and/or modify
+it under the terms of the GNU General Public License as published by
+the Free Software Foundation, version 3.
+
+Project Switcher is distributed in the hope that it will be useful,
+but WITHOUT ANY WARRANTY; without even the implied warranty of
+MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE. See the
+GNU General Public License for more details.
+
+You should have received a copy of the GNU General Public License
+along with Project Switcher. If not, see <https://www.gnu.org/licenses/>.
+-->
+
 <!-- Plugin Configuration File: https://plugins.jetbrains.com/docs/intellij/plugin-configuration-file.html -->
 <idea-plugin>
     <!-- Unique identifier of the plugin. It should be FQN, cannot be changed between the plugin versions. -->
-    <id>cz.atomsoft.projectswitcher.project-switcher-plugin</id>
+    <id>cz.atomsoft.ideaplugin.project-switcher</id>
 
     <!-- Public plugin name should be written in Title Case.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-name -->
     <name>Project Switcher</name>
 
     <!-- A displayed Vendor name or Organization ID displayed on the Plugins Page. -->
-    <vendor>Atomsoft</vendor>
+    <vendor>ATomSoft</vendor>
 
     <!-- Description of the plugin displayed on the Plugin Page and IDE Plugin Manager.
          Guidelines: https://plugins.jetbrains.com/docs/marketplace/best-practices-for-listing.html#plugin-description -->
@@ -24,12 +42,12 @@
     <!-- Extensions defined by the plugin.
          Read more: https://plugins.jetbrains.com/docs/intellij/plugin-extension-points.html -->
     <extensions defaultExtensionNs="com.intellij">
-        <toolWindow id="Projects"
-                    factoryClass="cz.atomsoft.projectswitcher.projectswitcherplugin.MyToolWindowFactory"
+        <toolWindow id="Project Switcher"
+                    factoryClass="cz.atomsoft.ideaplugin.projectswitcher.MyToolWindowFactory"
                     icon="AllIcons.Nodes.Project"/>
-        <applicationConfigurable id="cz.atomsoft.projectswitcher.settings"
+        <applicationConfigurable id="cz.atomsoft.ideaplugin.projectswitcher.settings"
                                  displayName="Project Switcher"
                                  parentId="tools"
-                                 instance="cz.atomsoft.projectswitcher.projectswitcherplugin.ProjectSwitcherConfigurable"/>
+                                 instance="cz.atomsoft.ideaplugin.projectswitcher.ProjectSwitcherConfigurable"/>
     </extensions>
 </idea-plugin>

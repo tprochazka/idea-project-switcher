@@ -16,4 +16,18 @@
  * along with Project Switcher. If not, see <https://www.gnu.org/licenses/>.
  */
 
-rootProject.name = "idea-project-switcher-plugin"
+package cz.atomsoft.ideaplugin.projectswitcher
+
+import com.intellij.util.messages.Topic
+import java.util.EventListener
+
+fun interface ProjectCatalogListener : EventListener {
+    fun catalogChanged(snapshot: ProjectCatalogSnapshot)
+
+    companion object {
+        val TOPIC: Topic<ProjectCatalogListener> = Topic.create(
+            "Project Switcher catalog changes",
+            ProjectCatalogListener::class.java,
+        )
+    }
+}

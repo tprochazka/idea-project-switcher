@@ -16,4 +16,18 @@
  * along with Project Switcher. If not, see <https://www.gnu.org/licenses/>.
  */
 
-rootProject.name = "idea-project-switcher-plugin"
+package cz.atomsoft.ideaplugin.projectswitcher
+
+import com.intellij.util.messages.Topic
+import java.util.EventListener
+
+fun interface ProjectBranchChangeListener : EventListener {
+    fun branchChanged(repositoryRoot: String, branch: String?)
+
+    companion object {
+        val TOPIC: Topic<ProjectBranchChangeListener> = Topic.create(
+            "Project Switcher branch changes",
+            ProjectBranchChangeListener::class.java,
+        )
+    }
+}
