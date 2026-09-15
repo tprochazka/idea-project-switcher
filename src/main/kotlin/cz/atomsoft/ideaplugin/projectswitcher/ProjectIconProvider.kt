@@ -40,17 +40,18 @@ class ProjectIconProvider {
     }
 
     private fun loadPlatformProjectIcon(path: Path, projectName: String): Icon? {
-        return loadUsingRecentProjectIconHelper(path, projectName)
-            ?: loadUsingRecentProjectsManager(path, projectName)
+        return runCatching { loadUsingRecentProjectIconHelper(path, projectName) }.getOrNull()
+            ?: runCatching { loadUsingRecentProjectsManager(path, projectName) }.getOrNull()
     }
 
     private fun loadUsingRecentProjectIconHelper(path: Path, projectName: String): Icon? {
         val clazz = runCatching { Class.forName("com.intellij.ide.RecentProjectIconHelper") }.getOrNull() ?: return null
-        val target = clazz.kotlin.objectInstance ?: clazz.fields.firstOrNull { it.name == "INSTANCE" }?.get(null)
+        val target = findSingleton(clazz)
         val pathText = path.toString()
         val iconSize = JBUI.scale(18)
+        val methods = publicMethods(clazz)
 
-        clazz.methods.firstOrNull { method ->
+        methods.firstOrNull { method ->
             Modifier.isStatic(method.modifiers) &&
                 method.name == "generateProjectIcon" &&
                 method.parameterCount == 4
@@ -67,7 +68,7 @@ class ProjectIconProvider {
             arrayOf<Any>(path),
         )
 
-        clazz.methods.forEach { method ->
+        methods.forEach { method ->
             if (method.name != "getProjectIcon") return@forEach
             val instance = when {
                 Modifier.isStatic(method.modifiers) -> null
@@ -87,12 +88,13 @@ class ProjectIconProvider {
 
     private fun loadUsingRecentProjectsManager(path: Path, projectName: String): Icon? {
         val clazz = runCatching { Class.forName("com.intellij.ide.RecentProjectsManagerBase") }.getOrNull() ?: return null
-        val instance = clazz.methods.firstOrNull {
+        val methods = publicMethods(clazz)
+        val instance = methods.firstOrNull {
             it.name == "getInstanceEx" && it.parameterCount == 0 && Modifier.isStatic(it.modifiers)
-        }?.invoke(null) ?: return null
+        }?.let { method -> runCatching { method.invoke(null) }.getOrNull() } ?: return null
 
         val pathText = path.toString()
-        clazz.methods.forEach { method ->
+        methods.forEach { method ->
             if (method.name != "getProjectIcon") return@forEach
             val result = runCatching {
                 when (method.parameterCount) {
@@ -106,6 +108,27 @@ class ProjectIconProvider {
         }
 
         return null
+    }
+
+    private fun findSingleton(clazz: Class<*>): Any? {
+        runCatching { clazz.kotlin.objectInstance }
+            .getOrNull()
+            ?.let { return it }
+
+        val fields = (runCatching { clazz.declaredFields.toList() }.getOrDefault(emptyList()) +
+            runCatching { clazz.fields.toList() }.getOrDefault(emptyList()))
+        return fields.firstOrNull { field ->
+            field.name == "INSTANCE" && Modifier.isStatic(field.modifiers)
+        }?.let { field ->
+            runCatching {
+                field.isAccessible = true
+                field.get(null)
+            }.getOrNull()
+        }
+    }
+
+    private fun publicMethods(clazz: Class<*>): List<java.lang.reflect.Method> {
+        return runCatching { clazz.methods.toList() }.getOrDefault(emptyList())
     }
 }
 

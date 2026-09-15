@@ -25,7 +25,7 @@ plugins {
 }
 
 group = "cz.atomsoft.ideaplugin.projectswitcher"
-version = "1.0.3"
+version = providers.gradleProperty("pluginVersion").orElse("1.0.4").get()
 
 repositories {
     mavenCentral()
@@ -54,7 +54,9 @@ intellijPlatform {
         }
 
         changeNotes = """
-            Initial version
+            - Improve project scanning and Git branch tracking for nested repositories.
+            - Preserve UI state and keep project switching responsive during refreshes.
+            - Add automated verification and tagged GitHub releases.
         """.trimIndent()
     }
 

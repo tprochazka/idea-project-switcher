@@ -39,8 +39,8 @@ class ProjectSearchKeyTest {
     @Test
     fun `creates search key from project name and branch`() {
         val entry = ProjectEntry(
-            path = Paths.get("C:/Projects/scan-mode").toAbsolutePath().normalize(),
-            scanRoot = Paths.get("C:/Projects").toAbsolutePath().normalize(),
+            path = Paths.get("Projects", "scan-mode").toAbsolutePath().normalize(),
+            scanRoot = Paths.get("Projects").toAbsolutePath().normalize(),
             name = "scan-mode",
             branch = "FW-6138_espresso-tests",
         )

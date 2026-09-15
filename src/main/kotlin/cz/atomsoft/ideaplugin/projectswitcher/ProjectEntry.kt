@@ -25,6 +25,7 @@ data class ProjectEntry(
     val scanRoot: Path,
     val name: String,
     val branch: String?,
+    val repositoryRoot: Path? = null,
 )
 
 enum class SortMode {

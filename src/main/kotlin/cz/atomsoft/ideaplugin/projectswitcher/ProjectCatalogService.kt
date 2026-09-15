@@ -30,6 +30,8 @@ class ProjectCatalogService : Disposable {
     private val lock = Any()
     private var currentSnapshot = ProjectCatalogSnapshot()
     private var scanSequence = 0
+    private var branchEventSequence = 0L
+    private val branchEvents = linkedMapOf<String, BranchUpdateEvent>()
     private var disposed = false
 
     init {
@@ -54,6 +56,7 @@ class ProjectCatalogService : Disposable {
         if (normalizedRoots.isEmpty()) {
             val snapshot = synchronized(lock) {
                 scanSequence++
+                branchEvents.clear()
                 currentSnapshot = ProjectCatalogSnapshot(
                     rootPaths = emptyList(),
                     items = emptyList(),
@@ -90,7 +93,7 @@ class ProjectCatalogService : Disposable {
                 items = retainedItems,
                 state = ProjectCatalogState.SCANNING,
             )
-            ScanRequest(id, normalizedRoots, currentSnapshot)
+            ScanRequest(id, normalizedRoots, currentSnapshot, branchEventSequence)
         }
 
         publish(request.scanningSnapshot)
@@ -101,13 +104,20 @@ class ProjectCatalogService : Disposable {
 
                 currentSnapshot = result.fold(
                     onSuccess = { entries ->
+                        val reconciledEntries = reconcileScannedEntries(
+                            scannedEntries = entries,
+                            scanStartedAfterBranchEvent = request.branchEventSequence,
+                            branchEvents = branchEvents.values.toList(),
+                        )
+                        branchEvents.clear()
                         ProjectCatalogSnapshot(
                             rootPaths = request.rootPaths,
-                            items = entries.toCatalogItems(),
+                            items = reconciledEntries.toCatalogItems(),
                             state = ProjectCatalogState.READY,
                         )
                     },
                     onFailure = {
+                        branchEvents.clear()
                         ProjectCatalogSnapshot(
                             rootPaths = request.rootPaths,
                             items = currentSnapshot.items,
@@ -125,12 +135,25 @@ class ProjectCatalogService : Disposable {
         synchronized(lock) {
             disposed = true
             scanSequence++
+            branchEvents.clear()
             currentSnapshot = ProjectCatalogSnapshot()
         }
     }
 
     private fun updateBranch(repositoryRoot: String, branch: String?) {
         val snapshot = synchronized(lock) {
+            if (disposed) return
+
+            if (currentSnapshot.state == ProjectCatalogState.SCANNING) {
+                val event = BranchUpdateEvent(
+                    sequence = ++branchEventSequence,
+                    repositoryRoot = repositoryRoot,
+                    branch = branch,
+                )
+                val key = runCatching { ProjectPathUtils.key(Paths.get(repositoryRoot)) }
+                    .getOrElse { repositoryRoot }
+                branchEvents[key] = event
+            }
             val currentEntries = currentSnapshot.items.map { it.entry }
             val updatedEntries = ProjectBranchUpdater.updateBranch(currentEntries, repositoryRoot, branch)
             if (updatedEntries === currentEntries) return
@@ -142,11 +165,13 @@ class ProjectCatalogService : Disposable {
     }
 
     private fun publish(snapshot: ProjectCatalogSnapshot) {
-        if (disposed) return
+        synchronized(lock) {
+            if (disposed || currentSnapshot !== snapshot) return
 
-        ApplicationManager.getApplication().messageBus
-            .syncPublisher(ProjectCatalogListener.TOPIC)
-            .catalogChanged(snapshot)
+            ApplicationManager.getApplication().messageBus
+                .syncPublisher(ProjectCatalogListener.TOPIC)
+                .catalogChanged(snapshot)
+        }
     }
 
     companion object {
@@ -186,7 +211,34 @@ private data class ScanRequest(
     val id: Int,
     val rootPaths: List<String>,
     val scanningSnapshot: ProjectCatalogSnapshot,
+    val branchEventSequence: Long,
 )
+
+internal data class BranchUpdateEvent(
+    val sequence: Long,
+    val repositoryRoot: String,
+    val branch: String?,
+)
+
+internal fun reconcileScannedEntries(
+    scannedEntries: List<ProjectEntry>,
+    scanStartedAfterBranchEvent: Long,
+    branchEvents: List<BranchUpdateEvent>,
+): List<ProjectEntry> {
+    var reconciledEntries = scannedEntries
+    branchEvents
+        .asSequence()
+        .filter { it.sequence > scanStartedAfterBranchEvent }
+        .sortedBy { it.sequence }
+        .forEach { event ->
+            reconciledEntries = ProjectBranchUpdater.updateBranch(
+                reconciledEntries,
+                event.repositoryRoot,
+                event.branch,
+            )
+        }
+    return reconciledEntries
+}
 
 fun createProjectSearchKey(entry: ProjectEntry): String {
     return normalizeSearchText("${entry.name} ${entry.branch.orEmpty()}")

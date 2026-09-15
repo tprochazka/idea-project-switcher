@@ -28,7 +28,8 @@ class ProjectBranchUpdaterTest {
     @Test
     fun `updates branch for matching project root`() {
         val root = Files.createTempDirectory("branch-update-root")
-        val entry = projectEntry(root.resolve("project").createDirectories(), "old")
+        val projectPath = root.resolve("project").createDirectories()
+        val entry = projectEntry(projectPath, "old", repositoryRoot = projectPath)
 
         val updated = ProjectBranchUpdater.updateBranch(listOf(entry), entry.path.toString(), "new")
 
@@ -39,7 +40,7 @@ class ProjectBranchUpdaterTest {
     fun `updates branch for project below changed repository root`() {
         val root = Files.createTempDirectory("branch-update-parent")
         val projectPath = root.resolve("repo").resolve("project").createDirectories()
-        val entry = projectEntry(projectPath, "old")
+        val entry = projectEntry(projectPath, "old", repositoryRoot = root.resolve("repo"))
 
         val updated = ProjectBranchUpdater.updateBranch(listOf(entry), root.resolve("repo").toString(), "main")
 
@@ -49,8 +50,10 @@ class ProjectBranchUpdaterTest {
     @Test
     fun `keeps unrelated projects unchanged`() {
         val root = Files.createTempDirectory("branch-update-unrelated")
-        val matching = projectEntry(root.resolve("repo").createDirectories(), "old")
-        val unrelated = projectEntry(root.resolve("other").createDirectories(), "keep")
+        val matchingPath = root.resolve("repo").createDirectories()
+        val unrelatedPath = root.resolve("other").createDirectories()
+        val matching = projectEntry(matchingPath, "old", repositoryRoot = matchingPath)
+        val unrelated = projectEntry(unrelatedPath, "keep", repositoryRoot = unrelatedPath)
 
         val updated = ProjectBranchUpdater.updateBranch(
             listOf(matching, unrelated),
@@ -65,7 +68,8 @@ class ProjectBranchUpdaterTest {
     @Test
     fun `returns same list instance when nothing changed`() {
         val root = Files.createTempDirectory("branch-update-same")
-        val entry = projectEntry(root.resolve("project").createDirectories(), "main")
+        val projectPath = root.resolve("project").createDirectories()
+        val entry = projectEntry(projectPath, "main", repositoryRoot = projectPath)
         val entries = listOf(entry)
 
         val updated = ProjectBranchUpdater.updateBranch(entries, entry.path.toString(), "main")
@@ -73,12 +77,53 @@ class ProjectBranchUpdaterTest {
         assertSame(entries, updated)
     }
 
-    private fun projectEntry(path: java.nio.file.Path, branch: String): ProjectEntry {
+    @Test
+    fun `does not update nested checkout owned by another repository`() {
+        val root = Files.createTempDirectory("branch-update-nested-repositories")
+        val parentRepository = root.resolve("parent").createDirectories()
+        val nestedRepository = parentRepository.resolve("nested").createDirectories()
+        val parentEntry = projectEntry(parentRepository, "parent", repositoryRoot = parentRepository)
+        val nestedEntry = projectEntry(nestedRepository, "nested", repositoryRoot = nestedRepository)
+
+        val updated = ProjectBranchUpdater.updateBranch(
+            listOf(parentEntry, nestedEntry),
+            parentRepository.toString(),
+            "changed",
+        )
+
+        assertEquals("changed", updated[0].branch)
+        assertEquals("nested", updated[1].branch)
+    }
+
+    @Test
+    fun `keeps case-distinct paths separate on case-sensitive filesystems`() {
+        if (java.io.File.separatorChar == '\\') return
+
+        val root = Files.createTempDirectory("branch-update-case-sensitive")
+        val upper = root.resolve("Foo").createDirectories()
+        val lower = root.resolve("foo").createDirectories()
+        val entries = listOf(
+            projectEntry(upper, "upper", repositoryRoot = upper),
+            projectEntry(lower, "lower", repositoryRoot = lower),
+        )
+
+        val updated = ProjectBranchUpdater.updateBranch(entries, upper.toString(), "changed")
+
+        assertEquals("changed", updated[0].branch)
+        assertEquals("lower", updated[1].branch)
+    }
+
+    private fun projectEntry(
+        path: java.nio.file.Path,
+        branch: String,
+        repositoryRoot: java.nio.file.Path,
+    ): ProjectEntry {
         return ProjectEntry(
             path = path.toAbsolutePath().normalize(),
             scanRoot = path.parent.toAbsolutePath().normalize(),
             name = path.fileName.toString(),
             branch = branch,
+            repositoryRoot = repositoryRoot.toAbsolutePath().normalize(),
         )
     }
 }

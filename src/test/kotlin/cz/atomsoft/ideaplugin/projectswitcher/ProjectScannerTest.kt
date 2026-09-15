@@ -44,7 +44,8 @@ class ProjectScannerTest {
         assertEquals(projectDir.toAbsolutePath().normalize(), project.path)
         assertEquals(root.toAbsolutePath().normalize(), project.scanRoot)
         assertEquals("alpha", project.name)
-        assertEquals("login", project.branch)
+        assertEquals("feature/login", project.branch)
+        assertEquals(projectDir.toAbsolutePath().normalize(), project.repositoryRoot)
     }
 
     @Test
@@ -77,6 +78,7 @@ class ProjectScannerTest {
     @Test
     fun `returns null branch when project is not a git repository`() {
         val root = Files.createTempDirectory("scanner-nogit-root")
+        root.resolve(".git").createDirectories()
         val projectDir = root.resolve("plain").createDirectories()
         projectDir.resolve(".idea").createDirectories()
 
@@ -128,6 +130,78 @@ class ProjectScannerTest {
         assertEquals(2, projects.size)
         assertTrue(projects.any { it.name == "one" && it.branch == "main" })
         assertTrue(projects.any { it.name == "two" && it.branch == "release" })
+    }
+
+    @Test
+    fun `reads branch and repository root from an ancestor repository`() {
+        val root = Files.createTempDirectory("scanner-parent-repository-root")
+        root.resolve(".git").createDirectories().resolve("HEAD").writeText("ref: refs/heads/feature/parent\n")
+        val projectDir = root.resolve("nested").createDirectories()
+        projectDir.resolve("build.gradle.kts").writeText("plugins {}")
+
+        val project = ProjectScanner.scan(listOf(root.toString())).single()
+
+        assertEquals("feature/parent", project.branch)
+        assertEquals(root.toAbsolutePath().normalize(), project.repositoryRoot)
+    }
+
+    @Test
+    fun `preserves the discovered alias path while using the real repository root`() {
+        val root = Files.createTempDirectory("scanner-alias-root")
+        val realRoot = root.resolve("real-root").createDirectories()
+        val realProject = realRoot.resolve("nested-project").createDirectories()
+        realProject.resolve("settings.gradle.kts").writeText("rootProject.name = \"real-project\"")
+        realProject.resolve(".git").createDirectories().resolve("HEAD")
+            .writeText("ref: refs/heads/main\n")
+        val alias = root.resolve("alias")
+        try {
+            Files.createSymbolicLink(alias, realRoot)
+        } catch (_: UnsupportedOperationException) {
+            return
+        } catch (_: java.nio.file.FileSystemException) {
+            return
+        }
+
+        val project = ProjectScanner.scan(listOf(alias.toString())).single()
+
+        assertEquals(alias.resolve("nested-project").toAbsolutePath().normalize(), project.path)
+        assertEquals(realProject.toAbsolutePath().normalize(), project.repositoryRoot)
+    }
+
+    @Test
+    fun `keeps healthy projects when another git metadata file is malformed`() {
+        val root = Files.createTempDirectory("scanner-malformed-git-root")
+        val healthy = root.resolve("healthy").createDirectories()
+        healthy.resolve("settings.gradle.kts").writeText("rootProject.name = \"healthy\"")
+        healthy.resolve(".git").createDirectories().resolve("HEAD").writeText("ref: refs/heads/main\n")
+        val malformed = root.resolve("malformed").createDirectories()
+        malformed.resolve("settings.gradle.kts").writeText("rootProject.name = \"malformed\"")
+        malformed.resolve(".git").writeText("gitdir: " + '\u0000' + "invalid\n")
+
+        val projects = ProjectScanner.scan(listOf(root.toString()))
+
+        assertEquals(setOf("healthy", "malformed"), projects.map { it.name }.toSet())
+        assertEquals("main", projects.single { it.name == "healthy" }.branch)
+        assertNull(projects.single { it.name == "malformed" }.branch)
+    }
+
+    @Test
+    fun `does not follow a directory symlink back to an ancestor`() {
+        val root = Files.createTempDirectory("scanner-cycle-root")
+        val projectDir = root.resolve("project").createDirectories()
+        projectDir.resolve("settings.gradle.kts").writeText("rootProject.name = \"project\"")
+        val link = root.resolve("cycle")
+        try {
+            Files.createSymbolicLink(link, root)
+        } catch (_: UnsupportedOperationException) {
+            return
+        } catch (_: java.nio.file.FileSystemException) {
+            return
+        }
+
+        val projects = ProjectScanner.scan(listOf(root.toString()))
+
+        assertEquals(listOf("project"), projects.map { it.name })
     }
 
     @Test

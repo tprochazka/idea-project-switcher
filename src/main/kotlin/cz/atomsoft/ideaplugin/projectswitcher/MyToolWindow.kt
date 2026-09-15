@@ -67,11 +67,9 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
-import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Collections
-import java.util.Locale
 import java.util.concurrent.CancellationException
 import java.util.concurrent.atomic.AtomicBoolean
 import javax.swing.AbstractAction
@@ -117,6 +115,7 @@ private class ProjectSwitcherPanel(
     private val settings = ProjectSwitcherSettings.getInstance()
     private val projectCatalog = ProjectCatalogService.getInstance()
     private val projectIconProvider = ProjectIconProvider()
+    private val activeProjectPathIds = resolveActiveProjectPathIds(project)
     private val searchField = SearchTextField(false)
     private val statusLabel = JBLabel()
     private val contentPanel = JPanel(BorderLayout())
@@ -488,11 +487,12 @@ private class ProjectSwitcherPanel(
 
     private fun createRenderRequest(): RenderRequest {
         val id = ++renderRequestSequence
+        val searchText = searchField.text
         return RenderRequest(
             id = id,
             items = catalogItems,
-            query = normalizeSearchText(settings.state.searchQuery),
-            hasQuery = settings.state.searchQuery.trim().isNotEmpty(),
+            query = normalizeSearchText(searchText),
+            hasQuery = searchText.trim().isNotEmpty(),
             sortMode = settings.state.sortModeEnum,
             viewMode = settings.state.viewModeEnum,
             recentTimestampsByPath = recentTimestampsByPath,
@@ -522,6 +522,7 @@ private class ProjectSwitcherPanel(
                 ),
             )
             request.cancellation.throwIfCancelled()
+            val activeProjectEntryPathIds = resolveActiveProjectEntryPathIds(projects, activeProjectPathIds)
 
             val result = RenderResult(
                 id = request.id,
@@ -530,6 +531,7 @@ private class ProjectSwitcherPanel(
                 viewMode = request.viewMode,
                 recentTimestampsByPath = request.recentTimestampsByPath,
                 projects = projects,
+                activeProjectPathIds = activeProjectEntryPathIds,
             )
 
             SwingUtilities.invokeLater {
@@ -564,12 +566,17 @@ private class ProjectSwitcherPanel(
         renderedTree = null
         renderedViewMode = result.viewMode
         val component = when (result.viewMode) {
-            ViewMode.FLAT -> createFlatList(result.projects, resetScroll = result.hasQuery)
+            ViewMode.FLAT -> createFlatList(
+                projects = result.projects,
+                resetScroll = result.hasQuery,
+                activeProjectPathIds = result.activeProjectPathIds,
+            )
             ViewMode.TREE -> createTree(
                 projects = result.projects,
                 sortMode = result.sortMode,
                 recentTimestampsByPath = result.recentTimestampsByPath,
                 expandSearchMatches = result.hasQuery,
+                activeProjectPathIds = result.activeProjectPathIds,
             )
         }
         contentPanel.add(component, BorderLayout.CENTER)
@@ -655,17 +662,25 @@ private class ProjectSwitcherPanel(
         return String.CASE_INSENSITIVE_ORDER.compare(left.path.toString(), right.path.toString())
     }
 
-    private fun createFlatList(projects: List<ProjectEntry>, resetScroll: Boolean): JComponent {
+    private fun createFlatList(
+        projects: List<ProjectEntry>,
+        resetScroll: Boolean,
+        activeProjectPathIds: Set<String>,
+    ): JComponent {
         val model = DefaultListModel<ProjectEntry>()
         projects.forEach(model::addElement)
         val list = JBList(model)
         list.selectionMode = ListSelectionModel.SINGLE_SELECTION
         list.emptyText.text = "No projects found"
         ListHoverListener.DEFAULT.addTo(list)
-        list.cellRenderer = ProjectListRenderer(projectIconProvider) { activeProjectPathIds() }
+        list.cellRenderer = ProjectListRenderer(projectIconProvider, activeProjectPathIds)
         list.addMouseListener(ProjectMouseListener { event ->
             val index = list.locationToIndex(event.point)
-            if (index >= 0) model.getElementAt(index) else null
+            if (index < 0 || list.getCellBounds(index, index)?.contains(event.point) != true) {
+                null
+            } else {
+                model.getElementAt(index)
+            }
         })
         val scrollPane = createProjectScrollPane(list)
         registerScrollPersistence(scrollPane, ViewMode.FLAT)
@@ -684,6 +699,7 @@ private class ProjectSwitcherPanel(
         sortMode: SortMode,
         recentTimestampsByPath: Map<String, Long>,
         expandSearchMatches: Boolean,
+        activeProjectPathIds: Set<String>,
     ): JComponent {
         val root = DefaultMutableTreeNode("Projects")
         val rootNodes = linkedMapOf<Path, DefaultMutableTreeNode>()
@@ -718,13 +734,16 @@ private class ProjectSwitcherPanel(
         }
         sortTreeChildren(root, projectComparator(sortMode, recentTimestampsByPath))
 
-        val tree = ProjectTree(DefaultTreeModel(root)) { activeProjectPathIds() }
+        val tree = ProjectTree(DefaultTreeModel(root), activeProjectPathIds)
         tree.isRootVisible = false
         tree.showsRootHandles = true
         tree.rowHeight = 0
-        tree.cellRenderer = ProjectTreeRenderer(projectIconProvider) { activeProjectPathIds() }
+        tree.cellRenderer = ProjectTreeRenderer(projectIconProvider, activeProjectPathIds)
         tree.addMouseListener(ProjectMouseListener { event ->
             val path = tree.getPathForLocation(event.x, event.y) ?: return@ProjectMouseListener null
+            if (tree.getPathBounds(path)?.contains(event.x, event.y) != true) {
+                return@ProjectMouseListener null
+            }
             (path.lastPathComponent as? DefaultMutableTreeNode)?.userObject as? ProjectEntry
         })
         tree.addTreeExpansionListener(object : TreeExpansionListener {
@@ -944,10 +963,6 @@ private class ProjectSwitcherPanel(
         return (node.userObject as? DirectoryNode)?.id
     }
 
-    private fun activeProjectPathIds(): Set<String> {
-        return activeProjectPathIds(project)
-    }
-
     private fun openProject(entry: ProjectEntry, newWindow: Boolean) {
         saveVisibleState()
         ProjectUtil.openOrImport(entry.path, project, newWindow)
@@ -999,6 +1014,7 @@ private data class RenderResult(
     val viewMode: ViewMode,
     val recentTimestampsByPath: Map<String, Long>,
     val projects: List<ProjectEntry>,
+    val activeProjectPathIds: Set<String>,
 )
 
 private class RenderCancellation {
@@ -1016,13 +1032,13 @@ private class RenderCancellation {
     }
 }
 
-private fun activeProjectPathIds(project: Project): Set<String> {
+private fun resolveActiveProjectPathIds(project: Project): Set<String> {
     val paths = linkedSetOf<Path>()
     project.basePath?.let { addProjectPathVariants(Paths.get(it), paths) }
     project.projectFilePath?.let { addProjectPathVariants(Paths.get(it), paths) }
 
     return paths
-        .flatMapTo(linkedSetOf()) { normalizedPathIds(it) }
+        .flatMapTo(linkedSetOf()) { resolvePathIdentityIds(it) }
 }
 
 private fun addProjectPathVariants(path: Path, paths: MutableSet<Path>) {
@@ -1035,30 +1051,34 @@ private fun addProjectPathVariants(path: Path, paths: MutableSet<Path>) {
     }
 }
 
+private fun resolveActiveProjectEntryPathIds(
+    entries: List<ProjectEntry>,
+    activeProjectPathIds: Set<String>,
+): Set<String> {
+    if (activeProjectPathIds.isEmpty()) return emptySet()
+    return entries.asSequence()
+        .filter { entry -> resolvePathIdentityIds(entry.path).any(activeProjectPathIds::contains) }
+        .map { entry -> ProjectPathUtils.key(entry.path) }
+        .toSet()
+}
+
 private fun isActiveProjectPath(projectPath: Path, activeProjectPathIds: Set<String>): Boolean {
-    if (activeProjectPathIds.isEmpty()) return false
-    return normalizedPathIds(projectPath).any { it in activeProjectPathIds }
+    return ProjectPathUtils.key(projectPath) in activeProjectPathIds
 }
 
-private fun normalizedPathIds(path: Path): Set<String> {
-    val ids = linkedSetOf(path.toAbsolutePath().normalize().pathId())
-    if (Files.exists(path)) {
-        runCatching { path.toRealPath().normalize().pathId() }
+private fun resolvePathIdentityIds(path: Path): Set<String> {
+    val normalized = ProjectPathUtils.normalize(path)
+    return linkedSetOf<String>().apply {
+        add(ProjectPathUtils.key(normalized))
+        runCatching { normalized.toRealPath().normalize() }
             .getOrNull()
-            ?.let(ids::add)
+            ?.let { add(ProjectPathUtils.key(it)) }
     }
-    return ids
-}
-
-private fun Path.pathId(): String {
-    return toString()
-        .trimEnd('\\', '/')
-        .lowercase(Locale.ROOT)
 }
 
 private class ProjectTree(
     model: DefaultTreeModel,
-    private val activeProjectPathIdsProvider: () -> Set<String>,
+    private val activeProjectPathIds: Set<String>,
 ) : Tree(model) {
     var hoveredRow: Int = -1
         private set
@@ -1097,8 +1117,6 @@ private class ProjectTree(
     }
 
     private fun paintRowMarkers(graphics: Graphics) {
-        val activeProjectPathIds = activeProjectPathIdsProvider()
-
         val graphics2D = graphics.create() as Graphics2D
         try {
             graphics2D.setRenderingHint(RenderingHints.KEY_ANTIALIASING, RenderingHints.VALUE_ANTIALIAS_ON)
@@ -1142,7 +1160,7 @@ private class ProjectTree(
 
 private class ProjectListRenderer(
     private val projectIconProvider: ProjectIconProvider,
-    private val activeProjectPathIdsProvider: () -> Set<String>,
+    private val activeProjectPathIds: Set<String>,
 ) : ListCellRenderer<ProjectEntry> {
     private val cell = ProjectCellPanel(
         JBUI.Borders.empty(6, 6),
@@ -1156,7 +1174,7 @@ private class ProjectListRenderer(
         hasFocus: Boolean,
     ): Component {
         if (value == null) return cell.configureEmpty(list.background)
-        val isActiveProject = isActiveProjectPath(value.path, activeProjectPathIdsProvider())
+        val isActiveProject = isActiveProjectPath(value.path, activeProjectPathIds)
         val isHovered = index == ListHoverListener.getHoveredIndex(list)
         val foreground = if (selected) UIUtil.getListSelectionForeground(hasFocus) else list.foreground
         return cell.configure(
@@ -1175,7 +1193,7 @@ private class ProjectListRenderer(
 
 private class ProjectTreeRenderer(
     private val projectIconProvider: ProjectIconProvider,
-    private val activeProjectPathIdsProvider: () -> Set<String>,
+    private val activeProjectPathIds: Set<String>,
 ) : TreeCellRenderer {
     private val projectCell = ProjectCellPanel(
         JBUI.Borders.empty(4, 2, 5, 4),
@@ -1195,7 +1213,7 @@ private class ProjectTreeRenderer(
         val isHovered = row == (tree as? ProjectTree)?.hoveredRow
         return when (val userObject = node?.userObject) {
             is ProjectEntry -> {
-                val isActiveProject = isActiveProjectPath(userObject.path, activeProjectPathIdsProvider())
+                val isActiveProject = isActiveProjectPath(userObject.path, activeProjectPathIds)
                 val foreground = UIUtil.getTreeForeground(selected, hasFocus)
                 projectCell.configure(
                     projectIcon = projectIconProvider.getIcon(userObject),
