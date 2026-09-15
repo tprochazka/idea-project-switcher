@@ -44,6 +44,34 @@ other JetBrains IDEs that support the IntelliJ Platform project-opening APIs.
 - Opens a project in the current window on click, with an option to open it in a
   new window from the context menu.
 
+## Project detection
+
+The scanner starts in each folder configured in the plugin settings and checks
+the directory tree recursively. A directory is recognized as a project when it
+contains at least one of these project markers:
+
+- an `.idea` directory,
+- a Gradle settings or build file (`settings.gradle`, `settings.gradle.kts`,
+  `build.gradle`, or `build.gradle.kts`),
+- a Maven `pom.xml`, or
+- an IntelliJ project file with the `.ipr` extension.
+
+Once a project directory is found, it is added to the catalog and its children
+are not scanned as separate projects. This keeps a multi-module build as one
+entry instead of listing every module independently.
+
+The scanner skips Git and build metadata directories such as `.git`, `.gradle`,
+`build`, `out`, `.idea_modules`, and `node_modules`. Other hidden directories
+are skipped as well, except for `.idea`, which is itself a project marker.
+Unreadable directories are ignored. Directory symbolic links are not followed,
+and already visited real paths are tracked to prevent duplicate entries and
+filesystem cycles.
+
+For a detected project, the scanner finds the nearest parent directory that
+contains Git metadata and reads the active branch from that repository. A
+project can therefore be shown with its branch even when the Git repository is
+owned by a parent directory.
+
 ## Usage
 
 1. Open **Settings | Tools | Project Switcher**.
