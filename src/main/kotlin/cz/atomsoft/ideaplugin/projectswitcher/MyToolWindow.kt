@@ -29,6 +29,7 @@ import com.intellij.openapi.actionSystem.AnActionEvent
 import com.intellij.openapi.actionSystem.DefaultActionGroup
 import com.intellij.openapi.actionSystem.ToggleAction
 import com.intellij.openapi.application.ApplicationManager
+import com.intellij.openapi.ide.CopyPasteManager
 import com.intellij.openapi.options.ShowSettingsUtil
 import com.intellij.openapi.project.DumbAware
 import com.intellij.openapi.project.DumbAwareAction
@@ -67,6 +68,7 @@ import java.awt.event.KeyEvent
 import java.awt.event.MouseAdapter
 import java.awt.event.MouseEvent
 import java.awt.event.MouseMotionAdapter
+import java.awt.datatransfer.StringSelection
 import java.nio.file.Path
 import java.nio.file.Paths
 import java.util.Collections
@@ -989,7 +991,22 @@ private class ProjectSwitcherPanel(
             menu.add(JMenuItem("Open in New Window").apply {
                 addActionListener { openProject(entry, newWindow = true) }
             })
+            menu.add(JMenuItem("Copy branch").apply {
+                isEnabled = !entry.branch.isNullOrBlank()
+                addActionListener {
+                    entry.branch?.takeIf { it.isNotBlank() }?.let(::copyToClipboard)
+                }
+            })
+            menu.add(JMenuItem("Copy path").apply {
+                addActionListener {
+                    copyToClipboard(entry.path.toAbsolutePath().normalize().toString())
+                }
+            })
             menu.show(event.component, event.x, event.y)
+        }
+
+        private fun copyToClipboard(value: String) {
+            CopyPasteManager.getInstance().setContents(StringSelection(value))
         }
     }
 }
