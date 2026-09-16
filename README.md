@@ -90,7 +90,7 @@ available from the tool window overflow menu.
 1. Build or download the plugin ZIP.
 2. In the IDE, open **Settings | Plugins**.
 3. Choose **Install Plugin from Disk...**.
-4. Select `build/distributions/idea-project-switcher-plugin-1.0.4.zip`.
+4. Select `build/distributions/idea-project-switcher-plugin-0.9.0.zip`.
 
 ## Development
 
@@ -110,14 +110,14 @@ Common commands:
 The generated plugin ZIP is written to:
 
 ```text
-build/distributions/idea-project-switcher-plugin-1.0.4.zip
+build/distributions/idea-project-switcher-plugin-0.9.0.zip
 ```
 
 ## Continuous integration and releases
 
 Every branch push and pull request runs the tests, plugin build, and plugin
 configuration and structure checks through GitHub Actions. Pushing a numeric
-semantic-version tag such as `1.0.4` runs the same checks with that tag as the
+semantic-version tag such as `0.9.0` runs the same checks with that tag as the
 plugin version and creates a GitHub Release with the generated ZIP attached.
 
 Additional IntelliJ Platform SDK references are kept in

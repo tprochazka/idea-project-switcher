@@ -25,7 +25,7 @@ plugins {
 }
 
 group = "cz.atomsoft.ideaplugin.projectswitcher"
-version = providers.gradleProperty("pluginVersion").orElse("1.0.4").get()
+version = providers.gradleProperty("pluginVersion").get()
 
 repositories {
     mavenCentral()
