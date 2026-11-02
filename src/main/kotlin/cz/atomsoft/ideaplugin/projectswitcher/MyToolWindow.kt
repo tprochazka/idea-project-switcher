@@ -48,8 +48,11 @@ import com.intellij.ui.treeStructure.Tree
 import com.intellij.util.Alarm
 import com.intellij.openapi.util.io.FileUtil
 import com.intellij.util.ui.JBUI
+import com.intellij.util.ui.AsyncProcessIcon
+import com.intellij.openapi.util.Disposer
 import com.intellij.util.ui.UIUtil
 import java.awt.BorderLayout
+import java.awt.CardLayout
 import java.awt.Color
 import java.awt.Component
 import java.awt.FlowLayout
@@ -121,6 +124,9 @@ private class ProjectSwitcherPanel(
     private val searchField = SearchTextField(false)
     private val statusLabel = JBLabel()
     private val contentPanel = JPanel(BorderLayout())
+    private val contentLayout = CardLayout()
+    private val contentCards = JPanel(contentLayout)
+    private val scanProgressIcon = AsyncProcessIcon.Big("Scanning projects")
     private val renderAlarm = Alarm(Alarm.ThreadToUse.POOLED_THREAD, this)
     private val renderLock = Any()
     private var catalogItems: List<ProjectCatalogItem> = emptyList()
@@ -159,7 +165,11 @@ private class ProjectSwitcherPanel(
     init {
         border = JBUI.Borders.empty(4)
         add(createSearchBar(), BorderLayout.NORTH)
-        add(contentPanel, BorderLayout.CENTER)
+        Disposer.register(this, scanProgressIcon)
+        scanProgressIcon.suspend()
+        contentCards.add(contentPanel, "projects")
+        contentCards.add(createScanningPanel(), "scanning")
+        add(contentCards, BorderLayout.CENTER)
         add(statusLabel, BorderLayout.SOUTH)
 
         subscribeToCatalogChanges()
@@ -334,6 +344,30 @@ private class ProjectSwitcherPanel(
     private fun setRefreshInProgress(inProgress: Boolean) {
         refreshInProgress = inProgress
         refreshAction.templatePresentation.isEnabled = !inProgress && !disposed
+        if (inProgress) {
+            scanProgressIcon.resume()
+            contentLayout.show(contentCards, "scanning")
+        }
+        // Keep the scanning card visible until the asynchronous render is applied.
+    }
+
+    private fun showProjectContent() {
+        scanProgressIcon.suspend()
+        contentLayout.show(contentCards, "projects")
+    }
+
+    private fun createScanningPanel(): JComponent {
+        return JPanel(GridBagLayout()).apply {
+            val constraints = GridBagConstraints().apply {
+                gridx = 0
+                anchor = GridBagConstraints.CENTER
+            }
+            addCentered(scanProgressIcon, constraints, bottom = 12)
+            addCentered(JBLabel(SCANNING_TEXT).apply {
+                horizontalAlignment = JLabel.CENTER
+                foreground = UIUtil.getContextHelpForeground()
+            }, constraints, bottom = 0)
+        }
     }
 
     private fun showNoConfiguredRoots() {
@@ -351,6 +385,7 @@ private class ProjectSwitcherPanel(
         renderedViewMode = null
         statusLabel.text = ""
         contentPanel.add(createNoConfiguredRootsPanel(), BorderLayout.CENTER)
+        showProjectContent()
         contentPanel.revalidate()
         contentPanel.repaint()
     }
@@ -422,7 +457,7 @@ private class ProjectSwitcherPanel(
             }
             ProjectCatalogState.SCANNING -> {
                 setRefreshInProgress(true)
-                statusLabel.text = "Scanning..."
+                statusLabel.text = SCANNING_TEXT
                 renderEntries()
             }
             ProjectCatalogState.READY -> {
@@ -582,6 +617,7 @@ private class ProjectSwitcherPanel(
             )
         }
         contentPanel.add(component, BorderLayout.CENTER)
+        if (!refreshInProgress) showProjectContent()
         contentPanel.revalidate()
         contentPanel.repaint()
     }
@@ -1418,6 +1454,8 @@ private val TREE_ROW_MARKER_VERTICAL_INSET = JBUI.scale(1)
 private val TREE_ROW_MARKER_ARC = JBUI.scale(6)
 
 private const val SEARCH_DEBOUNCE_MS = 100
+
+private const val SCANNING_TEXT = "Scanning projects..."
 
 private const val CANCELLATION_CHECK_INTERVAL = 50
 

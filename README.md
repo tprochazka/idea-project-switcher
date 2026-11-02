@@ -90,7 +90,7 @@ available from the tool window overflow menu.
 1. Build or download the plugin ZIP.
 2. In the IDE, open **Settings | Plugins**.
 3. Choose **Install Plugin from Disk...**.
-4. Select `build/distributions/idea-project-switcher-plugin-0.9.0.zip`.
+4. Select `build/distributions/idea-project-switcher-plugin-0.9.1.zip`.
 
 ## Development
 
@@ -110,7 +110,7 @@ Common commands:
 The generated plugin ZIP is written to:
 
 ```text
-build/distributions/idea-project-switcher-plugin-0.9.0.zip
+build/distributions/idea-project-switcher-plugin-0.9.1.zip
 ```
 
 ## Continuous integration and releases
